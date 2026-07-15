@@ -181,8 +181,7 @@ def parse_bookmaker_text(text):
     }
     current_category = "Ignored"
     
-    for line in text.split('
-'):
+    for line in text.split('\n'):
         line = line.strip()
         if not line: continue
         
@@ -384,8 +383,7 @@ with tab2:
         if not bloco_texto_csv.strip():
             st.error("Cola alguns dados primeiro.")
         else:
-            linhas = bloco_texto_csv.strip().split('
-')
+            linhas = bloco_texto_csv.strip().split('\n')
             todas_apostas_valor = []
             with st.spinner('A simular todos os encontros...'):
                 for linha_texto in linhas:
@@ -422,8 +420,12 @@ with tab2:
                         }
                         for mercado, ev in evs.items():
                             if ev >= limite_ev:
-                                prob_mod = prob_p1 if "Vitória" in mercado and j1 in mercado else                                            prob_p2 if "Vitória" in mercado and j2 in mercado else                                            prob_over if "Over" in mercado else prob_hcp
-                                odd_casa = odd_j1 if "Vitória" in mercado and j1 in mercado else                                            odd_j2 if "Vitória" in mercado and j2 in mercado else                                            odd_ov if "Over" in mercado else odd_hcp
+                                prob_mod = prob_p1 if "Vitória" in mercado and j1 in mercado else \
+                                           prob_p2 if "Vitória" in mercado and j2 in mercado else \
+                                           prob_over if "Over" in mercado else prob_hcp
+                                odd_casa = odd_j1 if "Vitória" in mercado and j1 in mercado else \
+                                           odd_j2 if "Vitória" in mercado and j2 in mercado else \
+                                           odd_ov if "Over" in mercado else odd_hcp
                                 todas_apostas_valor.append({
                                     "Jogo": f"{j1} vs {j2}", "Aposta": mercado, "EV": ev,
                                     "Odd Casa": odd_casa, "Odd Justa": 1 / prob_mod if prob_mod > 0 else 999.0
@@ -463,13 +465,7 @@ with tab3:
     h2h_p2_manual_t3 = col_h2.number_input(f"Vitórias reais de {scan_p2}", value=int(h2h_scan_vals[1]), min_value=0, step=1, key="h2h_t3_p2")
 
     texto_odds = st.text_area("Cola as Odds da Casa de Apostas:", height=300, key="raw_text_area",
-                              placeholder="Match winner
-1 — 1.34
-2 — 3.20
-...
-Total games
-Over 21.5 — 1.66
-...")
+                              placeholder="Match winner\n1 — 1.34\n2 — 3.20\n...\nTotal games\nOver 21.5 — 1.66\n...")
     
     if st.button("Analisar Todas as Odds (Scan Texto)", key="btn_tab3"):
         if scan_p1 == scan_p2:
@@ -523,7 +519,7 @@ Over 21.5 — 1.66
                         prob = np.mean(totais < linha_g)
                         lista_ev.append({"Mercado": f"Under {linha_g} Jogos", "Prob": prob, "Odd": odds_ou['Under'], "EV": (odds_ou['Under'] * prob) - 1})
                 
-                # 3.1 Over/Under de Jogos Individuais por Jogador (Prevenção de falso-positivo EN/PT)
+                # 3.1 Over/Under de Jogos Individuais por Jogador
                 for linha_g, odds_ou in mercados_extraidos['p1_total_games'].items():
                     if 'Over' in odds_ou:
                         prob = np.mean(p1_games_ganhos > linha_g)
@@ -596,14 +592,10 @@ Over 21.5 — 1.66
                         st.markdown("---")
                         st.markdown("### 🏆 Aposta Recomendada (Melhor Risco/Benefício)")
                         st.success(
-                            f"**Mercado:** {melhor_aposta['Mercado']}
-
-"
+                            f"**Mercado:** {melhor_aposta['Mercado']}\n\n"
                             f"**Odd Oferecida:** {melhor_aposta['Odd']:.2f} | "
                             f"**Probabilidade Simulada:** {melhor_aposta['Prob']:.1%} | "
-                            f"**Valor Esperado (EV):** +{melhor_aposta['EV']:.1%}
-
-"
+                            f"**Valor Esperado (EV):** +{melhor_aposta['EV']:.1%}\n\n"
                             f"⚖️ **Banca Sugerida:** **{sugestao_banca:.1%}** (Cálculo de Kelly Fracionário para maximização de capital)."
                         )
                         st.markdown("---")
