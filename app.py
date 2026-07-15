@@ -3,12 +3,19 @@ import pandas as pd
 import numpy as np
 import zipfile
 import os
+import joblib  # Para carregar o modelo de Machine Learning
 
-# Configuração da página
-st.set_page_config(page_title="QuantBet Pro", layout="wide")
-st.title("🎾 QuantBet Pro: Motor de Simulação Avançado")
+st.set_page_config(page_title="QuantBet OS", layout="wide")
+st.title("🎾 QuantBet OS: Sistema Quantitativo de Análise")
 
-# --- 1. CARREGAMENTO DE DADOS ---
+# --- 1. CARREGAMENTO DE MODELOS E DADOS ---
+@st.cache_resource
+def load_ml_model():
+    # Carrega o modelo XGBoost pré-treinado. Se não existir, avisa
+    if os.path.exists("modelo_tenis_calibrado.pkl"):
+        return joblib.load("modelo_tenis_calibrado.pkl")
+    return None
+
 @st.cache_data
 def load_data():
     with zipfile.ZipFile("dados_resumidos.zip", 'r') as z:
@@ -22,27 +29,64 @@ def load_elos():
 
 df = load_data()
 df_elos = load_elos()
+ml_model = load_ml_model()
 
-# --- 2. FUNÇÕES DE CÁLCULO ---
-def get_elo(nome_jogador, superficie):
+if ml_model is None:
+    st.warning("⚠️ Modelo XGBoost pré-treinado não encontrado (`modelo_tenis_calibrado.pkl`). A usar motor matemático alternativo.")
+
+# --- 2. ENGENHARIA DE FEATURES "ON-THE-FLY" ---
+def get_player_stats(nome_jogador, superficie):
     if not nome_jogador or pd.isna(nome_jogador):
-        return 1500
+        return {"elo": 1500, "hold_rate": 0.78, "fatigue": 0}
     
+    # Obter Elo
     nome_norm = str(nome_jogador).lower().strip()
-    match = df_elos[df_elos['Player'].str.lower().str.strip() == nome_norm]
+    match_elo = df_elos[df_elos['Player'].str.lower().str.strip() == nome_norm]
+    elo = 1500
+    if not match_elo.empty:
+        col = {'Clay': 'cElo', 'Grass': 'gElo', 'Hard': 'hElo'}.get(superficie, 'Elo')
+        elo = float(match_elo[col].values[0])
+        
+    # Extrair estatísticas recentes dos dados históricos (Match Charting Project)
+    partidas_jogador = df[df['player'].str.lower().str.strip() == nome_norm]
     
-    if match.empty: 
-        return 1500
-    
-    col = {'Clay': 'cElo', 'Grass': 'gElo', 'Hard': 'hElo'}.get(superficie, 'Elo')
-    return float(match[col].values[0])
+    # Média de Hold % histórica do jogador (padrão 78% se sem dados)
+    hold_rate = 0.78
+    if not partidas_jogador.empty and 'hold_percentage' in partidas_jogador.columns:
+        hold_rate = partidas_jogador['hold_percentage'].mean()
+        
+    # Simulação de variável de fadiga (ex: dias desde a última partida ou games jogados recentemente)
+    fatigue = 0
+    if not partidas_jogador.empty and 'games_played_last_week' in partidas_jogador.columns:
+        fatigue = partidas_jogador['games_played_last_week'].iloc[-1]
+        
+    return {"elo": elo, "hold_rate": hold_rate, "fatigue": fatigue}
 
-def simulate_match(elo_p1, elo_p2, sets_to_win):
-    elo_diff = elo_p1 - elo_p2
-    game_prob_shift = elo_diff / 3000 
+# --- 3. SIMULAÇÃO MONTE CARLO INTEGRADA COM ML ---
+def simulate_match_ml(stats_p1, stats_p2, sets_to_win, ml_model):
+    # Se temos o modelo ML, usamos as previsões dele para calibrar o Monte Carlo
+    if ml_model is not None:
+        # Criar a linha de features para alimentar o XGBoost
+        elo_diff = stats_p1['elo'] - stats_p2['elo']
+        hold_diff = stats_p1['hold_rate'] - stats_p2['hold_rate']
+        fatigue_diff = stats_p1['fatigue'] - stats_p2['fatigue']
+        
+        features = pd.DataFrame([[elo_diff, hold_diff, fatigue_diff]], 
+                                columns=['elo_diff', 'hold_diff_last5', 'fatigue_diff'])
+        
+        # O modelo calibrado diz-nos a probabilidade real de vitória de P1
+        prob_p1_match = ml_model.predict_proba(features)[0][1]
+    else:
+        # Fallback matemático se não houver XGBoost ativo
+        elo_diff = stats_p1['elo'] - stats_p2['elo']
+        prob_p1_match = 1 / (1 + 10**(-elo_diff / 400))
     
-    p1_hold_prob = np.clip(0.78 + game_prob_shift, 0.40, 0.95)
-    p2_hold_prob = np.clip(0.78 - game_prob_shift, 0.40, 0.95)
+    # Traduzir a probabilidade do encontro em probabilidade por set/game para o Monte Carlo
+    # (Calibração reversa)
+    game_prob_shift = (prob_p1_match - 0.5) * 0.15
+    
+    p1_hold_prob = np.clip(stats_p1['hold_rate'] + game_prob_shift, 0.45, 0.95)
+    p2_hold_prob = np.clip(stats_p2['hold_rate'] - game_prob_shift, 0.45, 0.95)
     
     p1_sets, p2_sets = 0, 0
     total_g, diff_g = 0, 0
@@ -54,14 +98,11 @@ def simulate_match(elo_p1, elo_p2, sets_to_win):
                 prob_p1_wins_game = p1_hold_prob
             else:
                 prob_p1_wins_game = 1 - p2_hold_prob
-            
+                
             prob_p1_wins_game += np.random.normal(0, 0.02)
             
-            if np.random.random() < prob_p1_wins_game:
-                p1_g += 1
-            else:
-                p2_g += 1
-                
+            if np.random.random() < prob_p1_wins_game: p1_g += 1
+            else: p2_g += 1
             if p1_g == 7 or p2_g == 7: break
             
         total_g += (p1_g + p2_g)
@@ -71,10 +112,10 @@ def simulate_match(elo_p1, elo_p2, sets_to_win):
         
     return total_g, diff_g, p1_sets, p2_sets
 
-# --- 3. INTERFACE ---
-st.sidebar.header("1. Configurações")
+# --- 4. INTERFACE ---
+st.sidebar.header("1. Configurações da Partida")
 superficie = st.sidebar.selectbox("Superfície", sorted(df['surface'].dropna().unique()))
-sets_input = st.sidebar.radio("Formato do Encontro (Sets)", [3, 5])
+sets_input = st.sidebar.radio("Sets do Encontro", [3, 5])
 
 # Filtro por superfície
 df_filtrado = df[df['surface'] == superficie]
@@ -84,27 +125,30 @@ c1, c2 = st.columns(2)
 nome_p1 = c1.selectbox("Favorito (P1)", jogadores, key="p1")
 nome_p2 = c2.selectbox("Underdog (P2)", jogadores, key="p2")
 
-# Mostrar Elos
-elo1 = get_elo(nome_p1, superficie)
-elo2 = get_elo(nome_p2, superficie)
-c1.metric(f"Elo {superficie}", f"{elo1:.1f}")
-c2.metric(f"Elo {superficie}", f"{elo2:.1f}")
+stats_p1 = get_player_stats(nome_p1, superficie)
+stats_p2 = get_player_stats(nome_p2, superficie)
 
-# --- INPUTS DAS ODDS DA CASA DE APOSTAS ---
-st.sidebar.header("2. Odds da Casa de Apostas")
-odd_p1_casa = st.sidebar.number_input(f"Odd Vitória {nome_p1}", value=1.50, step=0.01)
-odd_p2_casa = st.sidebar.number_input(f"Odd Vitória {nome_p2}", value=2.50, step=0.01)
+c1.metric(f"Elo {superficie} {nome_p1}", f"{stats_p1['elo']:.1f}")
+c2.metric(f"Elo {superficie} {nome_p2}", f"{stats_p2['elo']:.1f}")
+
+# --- INPUTS DE ODDS DAS CASAS DE APOSTAS ---
+st.sidebar.header("2. Odds Disponíveis")
+odd_p1_casa = st.sidebar.number_input(f"Odd {nome_p1}", value=1.70, step=0.01)
+odd_p2_casa = st.sidebar.number_input(f"Odd {nome_p2}", value=2.15, step=0.01)
 odd_over_casa = st.sidebar.number_input("Odd Over Jogos", value=1.85, step=0.01)
 odd_hcp_casa = st.sidebar.number_input("Odd Handicap P1", value=1.90, step=0.01)
 
+# Parâmetro de Filtro EV
+limite_ev = st.sidebar.slider("Limite de EV Aceitável (%)", min_value=1.0, max_value=15.0, value=5.0, step=0.5) / 100
+
 st.divider()
 
-# Simulação
-if st.button("Executar Simulação e Procurar Valor (+EV)"):
+if st.button("Executar Sistema Quantitativo"):
     if nome_p1 == nome_p2:
-        st.error("Por favor, seleciona dois jogadores diferentes.")
+        st.error("Seleciona jogadores diferentes.")
     else:
-        sims = [simulate_match(elo1, elo2, (sets_input//2 + 1)) for _ in range(5000)]
+        # Correr as 5000 simulações stocásticas
+        sims = [simulate_match_ml(stats_p1, stats_p2, (sets_input//2 + 1), ml_model) for _ in range(5000)]
         totais = np.array([s[0] for s in sims])
         diffs = np.array([s[1] for s in sims])
         p1_sets_ganhos = np.array([s[2] for s in sims])
@@ -120,42 +164,44 @@ if st.button("Executar Simulação e Procurar Valor (+EV)"):
         h = -2.5
         prob_h = np.mean(diffs > abs(h)) if h < 0 else np.mean(diffs < -h)
         
-        # --- CÁLCULO DO VALOR ESPERADO (EV) ---
+        # Cálculos de EV
         ev_p1 = (odd_p1_casa * prob_p1_win) - 1
         ev_p2 = (odd_p2_casa * prob_p2_win) - 1
         ev_over = (odd_over_casa * prob_over) - 1
         ev_hcp = (odd_hcp_casa * prob_h) - 1
         
-        # Dicionário com todas as apostas analisadas
-        analise_apostas = [
-            {"Aposta": f"Vitória {nome_p1}", "EV": ev_p1, "Odd Casa": odd_p1_casa, "Prob Modelo": prob_p1_win},
-            {"Aposta": f"Vitória {nome_p2}", "EV": ev_p2, "Odd Casa": odd_p2_casa, "Prob Modelo": prob_p2_win},
-            {"Aposta": f"Over {linha} Jogos", "EV": ev_over, "Odd Casa": odd_over_casa, "Prob Modelo": prob_over},
-            {"Aposta": f"Handicap P1 ({h})", "EV": ev_hcp, "Odd Casa": odd_hcp_casa, "Prob Modelo": prob_h}
+        dados_mercados = [
+            {"Mercado": f"Vitória {nome_p1}", "EV": ev_p1, "Odd Casa": odd_p1_casa, "Prob": prob_p1_win},
+            {"Mercado": f"Vitória {nome_p2}", "EV": ev_p2, "Odd Casa": odd_p2_casa, "Prob": prob_p2_win},
+            {"Mercado": f"Over {linha} Jogos", "EV": ev_over, "Odd Casa": odd_over_casa, "Prob": prob_over},
+            {"Mercado": f"Handicap P1 ({h})", "EV": ev_hcp, "Odd Casa": odd_hcp_casa, "Prob": prob_h}
         ]
         
-        df_ev = pd.DataFrame(analise_apostas)
-        df_ev = df_ev.sort_values(by="EV", ascending=False)
+        df_resultados = pd.DataFrame(dados_mercados).sort_values(by="EV", ascending=False)
         
-        st.subheader("📊 Relatório de Valor Esperado (Value Bets)")
+        st.subheader("📊 Relatório de Oportunidades")
         
-        # Mostrar a melhor aposta
-        melhor_aposta = df_ev.iloc[0]
-        if melhor_aposta["EV"] > 0:
-            st.success(f"🔥 **Aposta Recomendada:** {melhor_aposta['Aposta']} | EV: **+{melhor_aposta['EV']:.1%}** | Odd Justa: **{1/melhor_aposta['Prob Modelo']:.2f}** (Odd Casa: {melhor_aposta['Odd Casa']})")
+        # Filtro de Validação de EV
+        oportunidades_validas = df_resultados[df_resultados['EV'] >= limite_ev]
+        
+        if not oportunidades_validas.empty:
+            for idx, op in oportunidades_validas.iterrows():
+                st.success(
+                    f"🎯 **ENTRADA DETETADA:** {op['Mercado']} | "
+                    f"EV: **+{op['EV']:.2%}** (Excede o limite de {limite_ev:.1%}) | "
+                    f"Odd Justa: **{1/op['Prob']:.2f}** (Odd oferecida: {op['Odd Casa']:.2f})"
+                )
         else:
-            st.warning("⚠️ **Sem Aposta de Valor:** Nenhuma das odds oferecidas pela casa tem valor matemático positivo em relação ao teu modelo.")
+            st.warning(f"❌ Nenhuma aposta encontrou valor suficiente acima do teu limite de +{limite_ev:.1%}.")
             
         st.divider()
         
-        # Mostrar tabela de comparação completa
-        st.write("### Comparação de Mercados")
-        for index, row in df_ev.iterrows():
-            cor_ev = "green" if row["EV"] > 0 else "red"
-            st.markdown(
-                f"- **{row['Aposta']}**:"
-                f" Odd Casa: `{row['Odd Casa']:.2f}` |"
-                f" Probabilidade Modelo: `{row['Prob Modelo']:.1%}` |"
-                f" EV: <span style='color:{cor_ev}; font-weight:bold;'>{row['EV']:.1%}</span>", 
-                unsafe_allow_html=True
-            )
+        # Tabela Geral de Auditoria
+        st.write("### Detalhes de Auditoria de Odds")
+        st.dataframe(
+            df_resultados.style.format({
+                "EV": "{:.2%}",
+                "Odd Casa": "{:.2f}",
+                "Prob": "{:.2%}"
+            })
+        )
