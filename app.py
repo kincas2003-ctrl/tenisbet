@@ -170,11 +170,12 @@ def simulate_match_ml(stats_p1, stats_p2, sets_to_win, ml_model, circuito, h2h_s
         
     return total_g, diff_g, p1_sets, p2_sets
 
-# --- 5. PARSER DE TEXTO BRUTO DAS ODDS (MÉTODO BLINDADO E INDIVIDUAL) ---
+# --- 5. PARSER DE TEXTO BRUTO DAS ODDS (MÉTODO BLINDADO COM SUPORTE A SET HCP) ---
 def parse_bookmaker_text(text):
     markets = {
         'match_winner': {}, 'total_games': {}, 
         'game_handicap': {'P1': {}, 'P2': {}}, 
+        'set_handicap': {'P1': {}, 'P2': {}}, # NOVO DICIONÁRIO DE HANDICAP DE SETS
         'total_sets': {}, 'p1_set': None, 'p2_set': None,
         'p1_total_games': {}, 'p2_total_games': {}
     }
@@ -203,11 +204,14 @@ def parse_bookmaker_text(text):
                 except ValueError:
                     pass
         
-        # Identificar Cabeçalho com Hierarquia Rigorosa
+        # Identificar Cabeçalho com Hierarquia Avançada
         if not is_odds_line:
             clean_header = line_lower.replace(":", "").strip()
             
-            if "set 1" in clean_header or "set 2" in clean_header or "odd/even" in clean_header or "exact score" in clean_header or "correct score" in clean_header or "double result" in clean_header or "only one set" in clean_header:
+            # SALVAGUARDA DE SET HANDICAP: Se contiver 'handicap' e 'set/sets', muda logo de categoria
+            if "handicap" in clean_header and ("sets" in clean_header or "set" in clean_header):
+                current_category = "set_handicap"
+            elif "set 1" in clean_header or "set 2" in clean_header or "odd/even" in clean_header or "exact score" in clean_header or "correct score" in clean_header or "double result" in clean_header or "only one set" in clean_header:
                 current_category = "Ignored"
             elif "player 1" in clean_header and "total games" in clean_header:
                 current_category = "p1_total_games"
@@ -242,21 +246,19 @@ def parse_bookmaker_text(text):
                 m = re.match(r"(over|under)\s+(\d+\.\d+)", key_part)
                 if m:
                     ou, val = m.group(1).capitalize(), float(m.group(2))
-                    
                     if current_category == "total_games":
                         target = 'total_sets' if val < 6.0 else 'total_games'
                     else:
                         target = current_category
-                        
                     if val not in markets[target]: markets[target][val] = {}
                     markets[target][val][ou] = odd_val
                     
-            elif current_category == "game_handicap":
+            elif current_category in ["game_handicap", "set_handicap"]:
                 m = re.match(r"(?:player )?(1|2)\s*\(?([+-]?\d+\.\d+)\)?", key_part)
                 if m:
                     p_num, hcp = m.group(1), float(m.group(2))
-                    if p_num == "1": markets['game_handicap']['P1'][hcp] = odd_val
-                    else: markets['game_handicap']['P2'][hcp] = odd_val
+                    if p_num == "1": markets[current_category]['P1'][hcp] = odd_val
+                    else: markets[current_category]['P2'][hcp] = odd_val
                     
             elif current_category == "p1_set" and "yes" in key_part: markets['p1_set'] = odd_val
             elif current_category == "p2_set" and "yes" in key_part: markets['p2_set'] = odd_val
@@ -471,7 +473,7 @@ with tab3:
                 p1_sets_ganhos = np.array([s[2] for s in sims])
                 p2_sets_ganhos = np.array([s[3] for s in sims])
                 
-                # --- EXTRAÇÃO DE JOGOS INDIVIDUAIS PARA CORRIGIR O ERRO ---
+                # Extração correta de jogos individuais
                 p1_games_ganhos = (totais + diffs) / 2
                 p2_games_ganhos = (totais - diffs) / 2
                 
@@ -488,7 +490,7 @@ with tab3:
                     odd = mercados_extraidos['match_winner']['P2']
                     lista_ev.append({"Mercado": f"Vitória {scan_p2}", "Prob": prob_p2_win, "Odd": odd, "EV": (odd * prob_p2_win) - 1})
                 
-                # 2. Ganhar pelo menos 1 Set (+1.5 Set hcp)
+                # 2. Ganhar pelo menos 1 Set
                 if mercados_extraidos['p1_set']:
                     prob = np.mean(p1_sets_ganhos >= 1)
                     lista_ev.append({"Mercado": f"{scan_p1} ganha +1 Set", "Prob": prob, "Odd": mercados_extraidos['p1_set'], "EV": (mercados_extraidos['p1_set'] * prob) - 1})
@@ -496,7 +498,7 @@ with tab3:
                     prob = np.mean(p2_sets_ganhos >= 1)
                     lista_ev.append({"Mercado": f"{scan_p2} ganha +1 Set", "Prob": prob, "Odd": mercados_extraidos['p2_set'], "EV": (mercados_extraidos['p2_set'] * prob) - 1})
                     
-                # 3. Over/Under de Games (Jogos)
+                # 3. Over/Under de Games (Jogos Totais)
                 for linha_g, odds_ou in mercados_extraidos['total_games'].items():
                     if 'Over' in odds_ou:
                         prob = np.mean(totais > linha_g)
@@ -505,7 +507,7 @@ with tab3:
                         prob = np.mean(totais < linha_g)
                         lista_ev.append({"Mercado": f"Under {linha_g} Jogos", "Prob": prob, "Odd": odds_ou['Under'], "EV": (odds_ou['Under'] * prob) - 1})
                 
-                # 3.1 NOVO: Over/Under de Jogos Individuais
+                # 3.1 Over/Under de Jogos Individuais
                 for linha_g, odds_ou in mercados_extraidos['p1_total_games'].items():
                     if 'Over' in odds_ou:
                         prob = np.mean(p1_games_ganhos > linha_g)
@@ -514,15 +516,15 @@ with tab3:
                         prob = np.mean(p1_games_ganhos < linha_g)
                         lista_ev.append({"Mercado": f"Under {linha_g} Jogos ({scan_p1})", "Prob": prob, "Odd": odds_ou['Under'], "EV": (odds_ou['Under'] * prob) - 1})
                         
-                for linha_g, odds_ou in mercados_extraidos['p2_total_games'].items():
+                for line_g, odds_ou in mercados_extraidos['p2_total_games'].items():
                     if 'Over' in odds_ou:
-                        prob = np.mean(p2_games_ganhos > linha_g)
-                        lista_ev.append({"Mercado": f"Over {linha_g} Jogos ({scan_p2})", "Prob": prob, "Odd": odds_ou['Over'], "EV": (odds_ou['Over'] * prob) - 1})
+                        prob = np.mean(p2_games_ganhos > line_g)
+                        lista_ev.append({"Mercado": f"Over {line_g} Jogos ({scan_p2})", "Prob": prob, "Odd": odds_ou['Over'], "EV": (odds_ou['Over'] * prob) - 1})
                     if 'Under' in odds_ou:
-                        prob = np.mean(p2_games_ganhos < linha_g)
-                        lista_ev.append({"Mercado": f"Under {linha_g} Jogos ({scan_p2})", "Prob": prob, "Odd": odds_ou['Under'], "EV": (odds_ou['Under'] * prob) - 1})
+                        prob = np.mean(p2_games_ganhos < line_g)
+                        lista_ev.append({"Mercado": f"Under {line_g} Jogos ({scan_p2})", "Prob": prob, "Odd": odds_ou['Under'], "EV": (odds_ou['Under'] * prob) - 1})
                 
-                # 4. Over/Under de Sets (Ex: Over 2.5 Sets)
+                # 4. Over/Under de Sets Totais
                 total_sets_jogados = p1_sets_ganhos + p2_sets_ganhos
                 for linha_s, odds_ou in mercados_extraidos['total_sets'].items():
                     if 'Over' in odds_ou:
@@ -532,17 +534,29 @@ with tab3:
                         prob = np.mean(total_sets_jogados < linha_s)
                         lista_ev.append({"Mercado": f"Under {linha_s} Sets", "Prob": prob, "Odd": odds_ou['Under'], "EV": (odds_ou['Under'] * prob) - 1})
                         
-                # 5. Handicaps do Player 1 (Favorito) - Positivos e Negativos
+                # 5. Handicaps de Games do Player 1 (Favorito)
                 for hcp_linha, odd in mercados_extraidos['game_handicap']['P1'].items():
                     prob = np.mean(diffs > -hcp_linha)  
                     linha_str = f"+{hcp_linha}" if hcp_linha > 0 else f"{hcp_linha}"
-                    lista_ev.append({"Mercado": f"Handicap {scan_p1} ({linha_str})", "Prob": prob, "Odd": odd, "EV": (odd * prob) - 1})
+                    lista_ev.append({"Mercado": f"Handicap Games {scan_p1} ({linha_str})", "Prob": prob, "Odd": odd, "EV": (odd * prob) - 1})
 
-                # 6. Handicaps do Player 2 (Underdog) - Positivos e Negativos
+                # 6. Handicaps de Games do Player 2 (Underdog)
                 for hcp_linha, odd in mercados_extraidos['game_handicap']['P2'].items():
                     prob = np.mean(diffs < hcp_linha)  
                     linha_str = f"+{hcp_linha}" if hcp_linha > 0 else f"{hcp_linha}"
-                    lista_ev.append({"Mercado": f"Handicap {scan_p2} ({linha_str})", "Prob": prob, "Odd": odd, "EV": (odd * prob) - 1})
+                    lista_ev.append({"Mercado": f"Handicap Games {scan_p2} ({linha_str})", "Prob": prob, "Odd": odd, "EV": (odd * prob) - 1})
+                    
+                # 7. MATEMÁTICA CORRETA: Handicaps de SETS do Player 1 (Ex: -1.5 Sets significa ganhar por 2-0)
+                for hcp_linha, odd in mercados_extraidos['set_handicap']['P1'].items():
+                    prob_set = np.mean((p1_sets_ganhos - p2_sets_ganhos) > -hcp_linha)
+                    linha_str = f"+{hcp_linha}" if hcp_linha > 0 else f"{hcp_linha}"
+                    lista_ev.append({"Mercado": f"Handicap Sets {scan_p1} ({linha_str})", "Prob": prob_set, "Odd": odd, "EV": (odd * prob_set) - 1})
+
+                # 8. MATEMÁTICA CORRETA: Handicaps de SETS do Player 2 (Ex: +1.5 Sets significa ganhar pelo menos um set)
+                for hcp_linha, odd in mercados_extraidos['set_handicap']['P2'].items():
+                    prob_set = np.mean((p1_sets_ganhos - p2_sets_ganhos) < hcp_linha)
+                    linha_str = f"+{hcp_linha}" if hcp_linha > 0 else f"{hcp_linha}"
+                    lista_ev.append({"Mercado": f"Handicap Sets {scan_p2} ({linha_str})", "Prob": prob_set, "Odd": odd, "EV": (odd * prob_set) - 1})
                     
                 # --- APRESENTAÇÃO E AUDITORIA COMPLETA ---
                 if lista_ev:
