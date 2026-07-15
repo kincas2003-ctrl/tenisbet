@@ -25,17 +25,25 @@ df_elos = load_elos()
 
 # --- 2. FUNÇÕES DE CÁLCULO ---
 def get_elo(nome_jogador, superficie):
-    # Proteção: se o seletor estiver vazio, retorna Elo base
     if not nome_jogador or pd.isna(nome_jogador):
         return 1500
     
-    row = df_elos[df_elos['Player'].str.lower() == nome_jogador.lower()]
-    if row.empty: 
+    # Normalização: remove espaços extras e coloca em minúsculas
+    nome_norm = nome_jogador.strip().lower()
+    
+    # Tenta encontrar no ficheiro de Elo
+    match = df_elos[df_elos['Player'].str.strip().str.lower() == nome_norm]
+    
+    if match.empty:
+        # Se não encontrar, tenta uma busca parcial (ex: sobrenome)
+        sobrenome = nome_norm.split()[-1]
+        match = df_elos[df_elos['Player'].str.lower().str.contains(sobrenome)]
+        
+    if match.empty:
         return 1500
     
-    # Mapeamento dinâmico baseado na superfície
     col = {'Clay': 'cElo', 'Grass': 'gElo', 'Hard': 'hElo'}.get(superficie, 'Elo')
-    return int(row[col].values[0])
+    return int(match[col].values[0])
 
 def monte_carlo_simulation(elo_p1, elo_p2, sets_to_win, n_simulations=10000):
     prob_p1 = 1 / (1 + 10**((elo_p2 - elo_p1) / 400))
@@ -102,3 +110,5 @@ if st.button("Executar Simulação de Monte Carlo"):
         prob_over = np.mean(totais > linha)
         st.metric("Probabilidade Over", f"{prob_over:.1%}")
         st.metric("Média de Jogos Previstos", f"{np.mean(totais):.1f}")
+        # Coloca isto logo após carregares os dados
+
