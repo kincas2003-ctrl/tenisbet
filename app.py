@@ -172,6 +172,7 @@ def simulate_match_ml(stats_p1, stats_p2, sets_to_win, ml_model, circuito, h2h_s
     return total_g, diff_g, p1_sets, p2_sets
 
 # --- 5. PARSER DE TEXTO BRUTO DAS ODDS ---
+# --- 5. PARSER DE TEXTO BRUTO DAS ODDS (MÉTODO BLINDADO) ---
 def parse_bookmaker_text(text):
     markets = {
         'match_winner': {}, 'total_games': {}, 
@@ -180,12 +181,12 @@ def parse_bookmaker_text(text):
     }
     current_category = "Ignored"
     
-    # Mapeamento de palavras-chave para categorias
+    # Dicionário robusto de palavras-chave
     cat_map = {
         'match winner': 'match_winner', 'winner': 'match_winner', 'vencedor': 'match_winner',
-        'total games': 'total_games', 'total de jogos': 'total_games',
+        'match total games': 'total_games', 'total games': 'total_games', 'total de jogos': 'total_games',
         'total sets': 'total_sets', 'total de sets': 'total_sets',
-        'handicap': 'game_handicap', 'handicap of games': 'game_handicap',
+        'match handicap': 'game_handicap', 'handicap of games': 'game_handicap', 'handicap': 'game_handicap',
         'player 1 to win at least one set': 'p1_set',
         'player 2 to win at least one set': 'p2_set'
     }
@@ -194,46 +195,70 @@ def parse_bookmaker_text(text):
         line = line.strip()
         if not line: continue
         
-        # Tenta identificar se é um cabeçalho (não contém odds)
-        is_category = False
-        for key in cat_map:
-            if key in line.lower() and ":" not in line and "—" not in line:
-                current_category = cat_map[key]
-                is_category = True
-                break
-        if is_category: continue
-            
-        # Tenta extrair odd
+        line_lower = line.lower()
+        
+        # 1. Filtro instantâneo de lixo/mercados secundários
+        if "set 1" in line_lower or "set 2" in line_lower or "odd/even" in line_lower or "exact score" in line_lower or "correct score" in line_lower or "double result" in line_lower or "only one set" in line_lower:
+            current_category = "Ignored"
+            continue
+
+        # 2. Testar se a linha é uma Odd (tem de terminar num número válido)
         line_clean = line.replace("—", ":").replace(" - ", ":")
+        is_odds_line = False
+        key_part = ""
+        odd_val = 0.0
+        
         if ":" in line_clean:
-            parts = line_clean.split(":")
-            key_part = parts[0].strip().lower()
-            try:
-                odd = float(parts[1].strip().replace(",", "."))
+            # Separar apenas pelo ÚLTIMO ":" na linha
+            parts = line_clean.rsplit(":", 1)
+            if len(parts) == 2:
+                potential_odd = parts[1].strip().replace(",", ".")
+                try:
+                    # Se der para converter em número, confirmamos que é linha de odd
+                    odd_val = float(potential_odd)
+                    key_part = parts[0].strip().lower()
+                    is_odds_line = True
+                except ValueError:
+                    pass
+        
+        # 3. Se NÃO for uma linha de odd, tentamos identificar como Cabeçalho
+        if not is_odds_line:
+            clean_header = line_lower.replace(":", "").strip()
+            for key, cat in cat_map.items():
+                if key in clean_header:
+                    current_category = cat
+                    break
+            continue
+            
+        # 4. Se chegou aqui e a categoria for Ignored, salta para a próxima linha
+        if current_category == "Ignored":
+            continue
+            
+        # 5. Processamento das Odds
+        try:
+            if current_category == "match_winner":
+                if key_part in ["player 1", "1"]: markets['match_winner']['P1'] = odd_val
+                elif key_part in ["player 2", "2"]: markets['match_winner']['P2'] = odd_val
                 
-                if current_category == "match_winner":
-                    if key_part in ["player 1", "1"]: markets['match_winner']['P1'] = odd
-                    elif key_part in ["player 2", "2"]: markets['match_winner']['P2'] = odd
-                
-                elif current_category in ["total_games", "total_sets"]:
-                    m = re.match(r"(over|under)\s+(\d+\.\d+)", key_part)
-                    if m:
-                        ou, val = m.group(1).capitalize(), float(m.group(2))
-                        target = 'total_sets' if val < 6.0 else 'total_games'
-                        if val not in markets[target]: markets[target][val] = {}
-                        markets[target][val][ou] = odd
-                        
-                elif current_category == "game_handicap":
-                    # Formatos aceites: "1 (-2.5)", "1(-2.5)", "p1(-2.5)"
-                    m = re.match(r"(?:player )?(1|2)\s*\(?([+-]?\d+\.\d+)\)?", key_part)
-                    if m:
-                        p_num, hcp = m.group(1), float(m.group(2))
-                        if p_num == "1": markets['game_handicap']['P1'][hcp] = odd
-                        else: markets['game_handicap']['P2'][hcp] = odd
-                        
-                elif current_category == "p1_set" and "yes" in key_part: markets['p1_set'] = odd
-                elif current_category == "p2_set" and "yes" in key_part: markets['p2_set'] = odd
-            except: continue
+            elif current_category in ["total_games", "total_sets"]:
+                m = re.match(r"(over|under)\s+(\d+\.\d+)", key_part)
+                if m:
+                    ou, val = m.group(1).capitalize(), float(m.group(2))
+                    target = 'total_sets' if val < 6.0 else 'total_games'
+                    if val not in markets[target]: markets[target][val] = {}
+                    markets[target][val][ou] = odd_val
+                    
+            elif current_category == "game_handicap":
+                m = re.match(r"(?:player )?(1|2)\s*\(?([+-]?\d+\.\d+)\)?", key_part)
+                if m:
+                    p_num, hcp = m.group(1), float(m.group(2))
+                    if p_num == "1": markets['game_handicap']['P1'][hcp] = odd_val
+                    else: markets['game_handicap']['P2'][hcp] = odd_val
+                    
+            elif current_category == "p1_set" and "yes" in key_part: markets['p1_set'] = odd_val
+            elif current_category == "p2_set" and "yes" in key_part: markets['p2_set'] = odd_val
+        except Exception:
+            continue
             
     return markets
 
