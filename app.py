@@ -68,3 +68,23 @@ nome_p2 = st.selectbox("Adversário", df['player'].unique())
 if st.button("Gerar Projeção Automática"):
     prob = calcular_probabilidade(nome_p1, nome_p2, df)
     st.write(f"Probabilidade calculada pelo modelo para {nome_p1}: {prob:.2%}")
+    def calcular_probabilidade(jogador1, jogador2, df):
+    # 1. Obter stats (se não houver dados, assumimos um valor neutro de 0.5)
+    def get_stats(nome):
+        dados = df[df['player'] == nome]
+        if dados.empty: return 0.5
+        # Peso maior para os pontos que ocorrem mais vezes (T e Wide)
+        return dados[['deuce_t', 'ad_t', 'deuce_wide', 'ad_wide']].mean().sum()
+
+    s1 = get_stats(jogador1)
+    s2 = get_stats(jogador2)
+    
+    # 2. Fórmula de Elo-Service (mais agressiva na diferenciação)
+    # A fórmula (S1^1.5) / (S1^1.5 + S2^1.5) exagera a diferença entre bons e maus 
+    # servidores, tornando o modelo mais decisivo e menos "em cima do muro"
+    prob_p1 = (s1**1.5) / ((s1**1.5) + (s2**1.5))
+    
+    return prob_p1
+# Agora que o CSV tem a coluna 'surface', isto já não será vazio:
+superficies_disponiveis = df['surface'].unique()
+superficie_jogo = st.selectbox("Superfície do Torneio", superficies_disponiveis)
