@@ -24,7 +24,7 @@ df = load_data()
 df_elos = load_elos()
 
 # --- 2. FUNÇÕES DE CÁLCULO ---
-def def normalize_name(name):
+def normalize_name(name):
     """Transforma 'De Jong, Jesper' ou 'Jesper De Jong' em 'jesper de jong'"""
     if pd.isna(name): return ""
     name = str(name).lower().strip()
