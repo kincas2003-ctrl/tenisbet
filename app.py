@@ -131,9 +131,9 @@ superficie = st.sidebar.selectbox("Superfície", sorted(df['surface'].dropna().u
 sets_padrao = [3] if circuito == "WTA (Feminino)" else [3, 5]
 sets_input = st.sidebar.radio("Sets do Encontro", sets_padrao)
 
-# Filtrar jogadores do dataset
-df_filtrado = df[df['surface'] == superficie]
-jogadores = sorted(df_filtrado['player'].unique())
+# --- CORREÇÃO DA SELEÇÃO DE JOGADORES ---
+# Em vez de filtrar por 'df', extraímos os nomes diretamente do ficheiro Elo ativo (ATP ou WTA)
+jogadores = sorted(df_elos['Player'].dropna().unique())
 
 c1, c2 = st.columns(2)
 nome_p1 = c1.selectbox("Favorito (P1)", jogadores, key="p1")
