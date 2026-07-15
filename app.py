@@ -131,7 +131,9 @@ def simulate_match_ml(stats_p1, stats_p2, sets_to_win, ml_model, circuito):
     return total_g, diff_g, p1_sets, p2_sets
 
 # --- 5. PARSER DE TEXTO BRUTO DAS ODDS ---
+# --- 5. PARSER DE TEXTO BRUTO DAS ODDS (REGEX) ---
 def parse_bookmaker_text(text):
+    """Lê o texto bruto da casa de apostas e extrai as linhas e odds de todos os mercados."""
     markets = {
         'match_winner': {},
         'total_games': {}, 
@@ -139,19 +141,17 @@ def parse_bookmaker_text(text):
         'p1_set': None,
         'p2_set': None
     }
+    
     current_category = None
     
     for line in text.split('\n'):
         line = line.strip()
         if not line: continue
         
-        if line in ["Match winner", "Total games", "Game handicap", 
-                    "Player 1 to win at least one set?", "Player 2 to win at least one set?"]:
+        # O SEGREDO: Se a linha não tem dois pontos ":", é um novo cabeçalho!
+        # Isto evita que estatísticas desconhecidas contaminem os dados das anteriores.
+        if ":" not in line:
             current_category = line
-            continue
-            
-        if line.startswith("Set 1") or line.startswith("Set 2") or line == "Odd/Even games":
-            current_category = "Ignored"
             continue
             
         if current_category == "Match winner":
@@ -408,24 +408,49 @@ with tab3:
                     prob = np.mean(diffs > abs(hcp_linha)) if hcp_linha < 0 else np.mean(diffs < -hcp_linha)
                     lista_ev.append({"Mercado": f"Handicap {scan_p1} ({hcp_linha})", "Prob": prob, "Odd": odd, "EV": (odd * prob) - 1})
                     
+               # Filtragem e Apresentação dos Resultados
                 if lista_ev:
                     df_scan = pd.DataFrame(lista_ev).sort_values(by="EV", ascending=False)
-                    df_scan_valor = df_scan[df_scan['EV'] >= limite_ev]
+                    df_scan_valor = df_scan[df_scan['EV'] >= limite_ev].copy()
                     
                     if not df_scan_valor.empty:
+                        # === CÁLCULO DE RISCO/BENEFÍCIO (Critério de Kelly) ===
+                        # A Fórmula de Kelly divide o EV pelo prémio líquido (Odd - 1)
+                        # Identifica a aposta que faz crescer a banca mais rápido com menor risco de quebra
+                        df_scan_valor['Kelly_Score'] = df_scan_valor['EV'] / (df_scan_valor['Odd'] - 1)
+                        melhor_aposta = df_scan_valor.loc[df_scan_valor['Kelly_Score'].idxmax()]
+                        
                         st.success(f"🎯 O modelo detetou {len(df_scan_valor)} apostas com valor acima de +{limite_ev:.1%}!")
-                        df_visual = df_scan_valor.copy()
+                        
+                        # Destaque da Aposta Recomendada
+                        st.markdown("---")
+                        st.markdown("### 🏆 Aposta Recomendada (Melhor Risco/Benefício)")
+                        st.info(
+                            f"**Mercado:** {melhor_aposta['Mercado']}\n\n"
+                            f"**Odd Casa:** {melhor_aposta['Odd']:.2f} | "
+                            f"**Probabilidade Real:** {melhor_aposta['Prob']:.1%} | "
+                            f"**Valor Esperado (EV):** +{melhor_aposta['EV']:.1%}\n\n"
+                            f"*(Matematicamente a aposta mais segura e lucrativa para o teu capital neste encontro)*"
+                        )
+                        st.markdown("---")
+                        
+                        # Tabela Geral Ordenada pelo Índice de Segurança
+                        df_visual = df_scan_valor.sort_values(by="Kelly_Score", ascending=False).copy()
                         df_visual['EV'] = df_visual['EV'].apply(lambda x: f"+{x:.2%}")
                         df_visual['Odd Justa'] = df_visual['Prob'].apply(lambda x: f"{1/x:.2f}" if x > 0 else "N/A")
                         df_visual['Prob'] = df_visual['Prob'].apply(lambda x: f"{x:.2%}")
                         df_visual['Odd'] = df_visual['Odd'].apply(lambda x: f"{x:.2f}")
+                        
+                        st.markdown("#### Todas as Apostas de Valor Encontradas")
                         st.dataframe(df_visual[['Mercado', 'Odd', 'Odd Justa', 'Prob', 'EV']], use_container_width=True)
                     else:
                         st.warning(f"❌ Nenhuma linha neste jogo oferece valor suficiente acima do limite de +{limite_ev:.1%}.")
+                        st.markdown("### As melhores opções avaliadas (Mesmo abaixo do limite):")
+                        
                         df_fallback = df_scan.head(5).copy()
                         df_fallback['EV'] = df_fallback['EV'].apply(lambda x: f"{x:.2%}")
                         df_fallback['Prob'] = df_fallback['Prob'].apply(lambda x: f"{x:.2%}")
                         df_fallback['Odd'] = df_fallback['Odd'].apply(lambda x: f"{x:.2f}")
-                        st.dataframe(df_fallback)
+                        st.dataframe(df_fallback[['Mercado', 'Odd', 'Prob', 'EV']])
                 else:
-                    st.error("Não foi possível identificar mercados válidos no texto colado. Certifica-te de que o texto segue a formatação padrão da casa de apostas.")
+                    st.error("Não foi possível identificar mercados válidos. Certifica-te de que o texto segue a formatação padrão da casa de apostas.")
