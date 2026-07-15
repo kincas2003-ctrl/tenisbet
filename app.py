@@ -245,8 +245,18 @@ def parse_bookmaker_text(text, p1_name="", p2_name=""):
         
         try:
             if current_category == "match_winner":
-                if any(x in key_part for x in p1_tokens + ["1", "casa", "home", "jogador 1", "player 1"]): markets['match_winner']['P1'] = odd_val
-                elif any(x in key_part for x in p2_tokens + ["2", "fora", "away", "jogador 2", "player 2"]): markets['match_winner']['P2'] = odd_val
+                # BLINDAGEM MÁXIMA: Rejeitar qualquer linha de mercado combinado (ex: Vence e +22.5, ou Resultado Exato 2-0)
+                if any(x in key_part for x in ["&", " e ", "+", "over", "under", "mais", "menos", "acima", "abaixo", "-", "/", "2:0", "0:2", "2:1", "1:2"]):
+                    continue
+                    
+                is_p1 = any(x in key_part for x in p1_tokens + ["casa", "home", "jogador 1", "player 1"]) or key_part == "1"
+                is_p2 = any(x in key_part for x in p2_tokens + ["fora", "away", "jogador 2", "player 2"]) or key_part == "2"
+                
+                # TRINCO DE SEGURANÇA: Só guarda se a gaveta estiver vazia (captura a odd verdadeira no topo da página)
+                if is_p1 and 'P1' not in markets['match_winner']:
+                    markets['match_winner']['P1'] = odd_val
+                elif is_p2 and 'P2' not in markets['match_winner']:
+                    markets['match_winner']['P2'] = odd_val
             
             elif current_category in ["total_games", "p1_total_games", "p2_total_games", "total_sets"]:
                 m = re.search(r"(over|under|mais de|menos de|mais|menos|acima|abaixo)\s*(\d+\.\d+)", key_part)
@@ -272,7 +282,8 @@ def parse_bookmaker_text(text, p1_name="", p2_name=""):
                 m = re.search(r"([+-]?\d+\.\d+)", key_part)
                 if m:
                     hcp = float(m.group(1))
-                    if any(x in key_part for x in p1_tokens + ["1", "casa", "player 1", "jogador 1"]): markets[current_category]['P1'][hcp] = odd_val
+                    is_p1 = any(x in key_part for x in p1_tokens + ["casa", "home", "player 1", "jogador 1"]) or key_part == "1"
+                    if is_p1: markets[current_category]['P1'][hcp] = odd_val
                     else: markets[current_category]['P2'][hcp] = odd_val
         except: continue
             
