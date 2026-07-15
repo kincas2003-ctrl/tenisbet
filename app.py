@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import zipfile
 import os
-import joblib  # Para carregar o modelo de Machine Learning (XGBoost/LightGBM)
+import joblib  
 import re
 
 # Configuração da página
@@ -56,19 +56,15 @@ st.sidebar.header("2. Filtros de Valor")
 limite_ev = st.sidebar.slider("Limite de EV Aceitável (%)", min_value=1.0, max_value=15.0, value=5.0, step=0.5) / 100
 odd_minima_rec = st.sidebar.number_input("Odd Mínima Recomendada", value=1.50, step=0.05, help="O sistema vai ignorar odds abaixo deste valor ao escolher a Melhor Aposta.")
 
-# --- NOVO: PAINEL DE CONDIÇÕES E AJUSTES DE JOGO ---
 st.sidebar.header("⚙️ Condições & Ajustes de Jogo")
 vel_campo = st.sidebar.selectbox(
-    "Velocidade do Campo (Condições)", 
+    "Velocidade do Campo", 
     ["Médio (Hard Normal)", "Lento (Clay Lento)", "Médio-Lento (Clay Rápido / Hard Lento)", "Rápido (Grass / Hard Rápido)", "Ultra Rápido (Indoor Rápido)"]
 )
+ajuste_forma = st.sidebar.slider("Ajuste de Forma (Favorecer P1 vs P2)", -5, 5, 0, help="Desvia a forma recente. Positivo ajuda P1.")
+ajuste_fadiga = st.sidebar.slider("Ajuste de Fadiga (Prejudicar P1 vs P2)", -5, 5, 0, help="Positivo cansa mais o P1, negativo cansa mais o P2.")
 
-st.sidebar.markdown("**Ajustes Manuais Finos**")
-ajuste_forma = st.sidebar.slider("Ajuste de Forma (Favorecer P1 vs P2)", -5, 5, 0, help="Desvia a forma recente. Positivo ajuda P1, negativo ajuda P2.")
-ajuste_fadiga = st.sidebar.slider("Ajuste de Fadiga (Favorecer P1 vs P2)", -5, 5, 0, help="Positivo cansa mais o P1 (prejudica P1), negativo cansa mais o P2.")
-ajuste_h2h = st.sidebar.slider("Ajuste de H2H (Vantagem P1)", -5, 5, 0, help="Soma vitórias diretas virtuais ao Player 1.")
-
-# --- 3. ENGENHARIA DE FEATURES "ON-THE-FLY" ---
+# --- 3. ENGENHARIA DE FEATURES ---
 def get_player_stats(nome_jogador, superficie, circuito):
     if not nome_jogador or pd.isna(nome_jogador):
         return {"elo": 1500, "hold_rate": 0.78 if circuito == "ATP (Masculino)" else 0.635, "fatigue": 0, "recent_form": 0.5}
@@ -81,17 +77,14 @@ def get_player_stats(nome_jogador, superficie, circuito):
         elo = float(match_elo[col].values[0])
         
     partidas_jogador = df[df['player'].str.lower().str.strip() == nome_norm]
-    
     hold_rate = 0.78 if circuito == "ATP (Masculino)" else 0.635
     if not partidas_jogador.empty and 'hold_percentage' in partidas_jogador.columns:
         hold_rate = partidas_jogador['hold_percentage'].mean()
         
-    # Fadiga (Auto)
     fatigue = 0
     if not partidas_jogador.empty and 'games_played_last_week' in partidas_jogador.columns:
         fatigue = partidas_jogador['games_played_last_week'].iloc[-1]
         
-    # Forma Recente (Auto - % de vitórias nos últimos 5 jogos da BD)
     recent_form = 0.5
     if not partidas_jogador.empty and 'winner' in df.columns:
         recentes = partidas_jogador.tail(5)
@@ -100,7 +93,6 @@ def get_player_stats(nome_jogador, superficie, circuito):
         
     return {"elo": elo, "hold_rate": hold_rate, "fatigue": fatigue, "recent_form": recent_form}
 
-# --- NOVO: CÁLCULO DE H2H AUTOMÁTICO NA BASE DE DADOS ---
 def calculate_h2h(p1, p2):
     p1_norm = str(p1).lower().strip()
     p2_norm = str(p2).lower().strip()
@@ -119,9 +111,8 @@ def calculate_h2h(p1, p2):
             
     return p1_wins, p2_wins
 
-# --- 4. SIMULAÇÃO MONTE CARLO COM MULTI-FATORES ---
+# --- 4. SIMULAÇÃO MONTE CARLO ---
 def simulate_match_ml(stats_p1, stats_p2, sets_to_win, ml_model, circuito, h2h_stats):
-    # 1. Definir base de Hold % com base no circuito
     if circuito == "WTA (Feminino)":
         base_hold = 0.635  
         limite_inf, limite_sup = 0.35, 0.85
@@ -129,49 +120,32 @@ def simulate_match_ml(stats_p1, stats_p2, sets_to_win, ml_model, circuito, h2h_s
         base_hold = 0.780  
         limite_inf, limite_sup = 0.45, 0.95
 
-    # 2. Ajuste de Condições do Campo (Velocidade)
-    if vel_campo == "Lento (Clay Lento)":
-        base_hold -= 0.04
-    elif vel_campo == "Médio-Lento (Clay Rápido / Hard Lento)":
-        base_hold -= 0.02
-    elif vel_campo == "Rápido (Grass / Hard Rápido)":
-        base_hold += 0.03
-    elif vel_campo == "Ultra Rápido (Indoor Rápido)":
-        base_hold += 0.05
+    if vel_campo == "Lento (Clay Lento)": base_hold -= 0.04
+    elif vel_campo == "Médio-Lento (Clay Rápido / Hard Lento)": base_hold -= 0.02
+    elif vel_campo == "Rápido (Grass / Hard Rápido)": base_hold += 0.03
+    elif vel_campo == "Ultra Rápido (Indoor Rápido)": base_hold += 0.05
 
-    # 3. Probabilidade Base (XGBoost ou Elo)
     if ml_model is not None:
         elo_diff = stats_p1['elo'] - stats_p2['elo']
         hold_diff = stats_p1['hold_rate'] - stats_p2['hold_rate']
         fatigue_diff = stats_p1['fatigue'] - stats_p2['fatigue']
-        
-        features = pd.DataFrame([[elo_diff, hold_diff, fatigue_diff]], 
-                                columns=['elo_diff', 'hold_diff_last5', 'fatigue_diff'])
+        features = pd.DataFrame([[elo_diff, hold_diff, fatigue_diff]], columns=['elo_diff', 'hold_diff_last5', 'fatigue_diff'])
         prob_p1_match = ml_model.predict_proba(features)[0][1]
     else:
         elo_diff = stats_p1['elo'] - stats_p2['elo']
         prob_p1_match = 1 / (1 + 10**(-elo_diff / 400))
     
-    # 4. APLICAÇÃO DOS MULTI-FATORES (Auto + Manual Sidebar)
-    # Forma Recente (Auto + Ajuste Manual)
     diff_forma = (stats_p1['recent_form'] - stats_p2['recent_form']) + (ajuste_forma * 0.10)
-    prob_p1_match += (diff_forma * 0.05) # Máximo +-5% de impacto por Forma
+    prob_p1_match += (diff_forma * 0.05) 
 
-    # Cansaço/Fadiga (Auto + Ajuste Manual)
-    # Mais cansaço acumulado reduz a probabilidade de vitória
     diff_fadiga = (stats_p1['fatigue'] - stats_p2['fatigue']) + (ajuste_fadiga * 10)
-    prob_p1_match -= (diff_fadiga / 100.0) * 0.08 # Máximo +-8% de impacto por Fadiga
+    prob_p1_match -= (diff_fadiga / 100.0) * 0.08 
 
-    # Confronto Direto H2H (Auto + Ajuste Manual)
-    vitorias_p1_h2h = h2h_stats[0] + (ajuste_h2h if ajuste_h2h > 0 else 0)
-    vitorias_p2_h2h = h2h_stats[1] + (abs(ajuste_h2h) if ajuste_h2h < 0 else 0)
-    diff_h2h = vitorias_p1_h2h - vitorias_p2_h2h
-    prob_p1_match += np.clip(diff_h2h * 0.015, -0.075, 0.075) # Máximo +-7.5% de impacto por H2H
+    # H2H aplicado diretamente com os valores manuais preenchidos
+    diff_h2h = h2h_stats[0] - h2h_stats[1]
+    prob_p1_match += np.clip(diff_h2h * 0.015, -0.075, 0.075)
 
-    # Limitar probabilidades físicas de vitória entre 5% e 95%
     prob_p1_match = np.clip(prob_p1_match, 0.05, 0.95)
-    
-    # Deslocamento de vantagem na quadra de serviço
     game_prob_shift = (prob_p1_match - 0.5) * 0.15
     p1_hold_prob = np.clip(base_hold + game_prob_shift, limite_inf, limite_sup)
     p2_hold_prob = np.clip(base_hold - game_prob_shift, limite_inf, limite_sup)
@@ -182,11 +156,8 @@ def simulate_match_ml(stats_p1, stats_p2, sets_to_win, ml_model, circuito, h2h_s
     while p1_sets < sets_to_win and p2_sets < sets_to_win:
         p1_g, p2_g = 0, 0
         while (p1_g < 6 and p2_g < 6) or abs(p1_g - p2_g) < 2:
-            if (p1_g + p2_g) % 2 == 0:
-                prob_p1_wins_game = p1_hold_prob
-            else:
-                prob_p1_wins_game = 1 - p2_hold_prob
-                
+            if (p1_g + p2_g) % 2 == 0: prob_p1_wins_game = p1_hold_prob
+            else: prob_p1_wins_game = 1 - p2_hold_prob
             prob_p1_wins_game += np.random.normal(0, 0.02)
             
             if np.random.random() < prob_p1_wins_game: p1_g += 1
@@ -200,17 +171,12 @@ def simulate_match_ml(stats_p1, stats_p2, sets_to_win, ml_model, circuito, h2h_s
         
     return total_g, diff_g, p1_sets, p2_sets
 
-# --- 5. PARSER DE TEXTO BRUTO DAS ODDS (REGEX ULTRA-ROBUSTO) ---
+# --- 5. PARSER DE TEXTO BRUTO DAS ODDS ---
 def parse_bookmaker_text(text):
     markets = {
-        'match_winner': {},
-        'total_games': {}, 
-        'game_handicap': {'P1': {}, 'P2': {}},  
-        'total_sets': {},
-        'p1_set': None,
-        'p2_set': None
+        'match_winner': {}, 'total_games': {}, 'game_handicap': {'P1': {}, 'P2': {}}, 
+        'total_sets': {}, 'p1_set': None, 'p2_set': None
     }
-    
     current_category = "Ignored"
     
     for line in text.split('\n'):
@@ -222,77 +188,52 @@ def parse_bookmaker_text(text):
         idx_col = line.rfind(":")
         idx_hyp = line.rfind(" - ")
         
-        last_sep = None
-        last_idx = -1
+        last_sep, last_idx = None, -1
         for sep, idx in [("—", idx_em), (":", idx_col), (" - ", idx_hyp)]:
             if idx > last_idx:
-                last_idx = idx
-                last_sep = sep
+                last_idx = idx; last_sep = sep
                 
-        is_odd_line = False
-        key_part = ""
-        odd = 0.0
+        is_odd_line, key_part, odd = False, "", 0.0
         
         if last_idx != -1:
             key_part = line[:last_idx].strip()
             odd_part = line[last_idx + len(last_sep):].strip().replace(",", ".")
             try:
-                odd = float(odd_part)
-                is_odd_line = True
-            except ValueError:
-                pass
+                odd = float(odd_part); is_odd_line = True
+            except ValueError: pass
                 
         if not is_odd_line:
-            if "set 1" in line_lower or "set 2" in line_lower or "odd/even" in line_lower or ("player" in line_lower and "total games" in line_lower):
-                current_category = "Ignored"
-            elif line_lower in ["match winner", "winner", "vencedor"]:
-                current_category = "match_winner"
-            elif line_lower in ["total games", "total de jogos"]:
-                current_category = "total_games"
-            elif line_lower in ["total sets", "total de sets"]:
-                current_category = "total_sets"
-            elif line_lower in ["game handicap", "handicap of games", "handicap de jogos"]:
-                current_category = "game_handicap"
-            elif "player 1 to win at least one set" in line_lower:
-                current_category = "p1_set"
-            elif "player 2 to win at least one set" in line_lower:
-                current_category = "p2_set"
-            else:
-                current_category = "Ignored"
+            if "set 1" in line_lower or "set 2" in line_lower or "odd/even" in line_lower or ("player" in line_lower and "total games" in line_lower): current_category = "Ignored"
+            elif line_lower in ["match winner", "winner", "vencedor"]: current_category = "match_winner"
+            elif line_lower in ["total games", "total de jogos"]: current_category = "total_games"
+            elif line_lower in ["total sets", "total de sets"]: current_category = "total_sets"
+            elif line_lower in ["game handicap", "handicap of games", "handicap de jogos"]: current_category = "game_handicap"
+            elif "player 1 to win at least one set" in line_lower: current_category = "p1_set"
+            elif "player 2 to win at least one set" in line_lower: current_category = "p2_set"
+            else: current_category = "Ignored"
             continue
             
-        if current_category == "Ignored": 
-            continue
+        if current_category == "Ignored": continue
             
         key_lower = key_part.lower().replace(",", ".")
-        
         if current_category == "match_winner":
             if key_lower in ["player 1", "1"]: markets['match_winner']['P1'] = odd
             elif key_lower in ["player 2", "2"]: markets['match_winner']['P2'] = odd
-                
         elif current_category in ["total_games", "total_sets"]:
             m = re.match(r"(over|under)\s+(\d+\.\d+)", key_lower)
             if m:
-                ou = m.group(1).capitalize()
-                line_val = float(m.group(2))
+                ou = m.group(1).capitalize(); line_val = float(m.group(2))
                 target_dict = 'total_sets' if line_val < 6.0 else 'total_games'
-                if line_val not in markets[target_dict]: 
-                    markets[target_dict][line_val] = {}
+                if line_val not in markets[target_dict]: markets[target_dict][line_val] = {}
                 markets[target_dict][line_val][ou] = odd
-                
         elif current_category == "game_handicap":
             m = re.match(r"(?:player )?(1|2)\s*\(([+-]?\d+\.\d+)\)", key_lower)
             if m:
-                player_num = m.group(1)
-                hcp_val = float(m.group(2))
-                if player_num == "1": 
-                    markets['game_handicap']['P1'][hcp_val] = odd
-                elif player_num == "2":
-                    markets['game_handicap']['P2'][hcp_val] = odd
-                    
+                player_num = m.group(1); hcp_val = float(m.group(2))
+                if player_num == "1": markets['game_handicap']['P1'][hcp_val] = odd
+                elif player_num == "2": markets['game_handicap']['P2'][hcp_val] = odd
         elif current_category == "p1_set":
             if key_lower == "yes": markets['p1_set'] = odd
-                
         elif current_category == "p2_set":
             if key_lower == "yes": markets['p2_set'] = odd
             
@@ -314,14 +255,16 @@ with tab1:
     stats_p2 = get_player_stats(nome_p2, superficie, circuito)
     h2h_p1_bd, h2h_p2_bd = calculate_h2h(nome_p1, nome_p2)
 
-    # Mostrar Métricas Avançadas
     c1.metric(f"Elo {superficie} {nome_p1}", f"{stats_p1['elo']:.1f}")
-    c1.markdown(f"📈 **Forma Recente (Vitórias):** `{stats_p1['recent_form']:.0%}` | 💤 **Fadiga Histórica:** `{stats_p1['fatigue']}`")
+    c1.markdown(f"📈 Forma Recente: `{stats_p1['recent_form']:.0%}` | 💤 Fadiga: `{stats_p1['fatigue']}`")
     
     c2.metric(f"Elo {superficie} {nome_p2}", f"{stats_p2['elo']:.1f}")
-    c2.markdown(f"📈 **Forma Recente (Vitórias):** `{stats_p2['recent_form']:.0%}` | 💤 **Fadiga Histórica:** `{stats_p2['fatigue']}`")
+    c2.markdown(f"📈 Forma Recente: `{stats_p2['recent_form']:.0%}` | 💤 Fadiga: `{stats_p2['fatigue']}`")
     
-    st.info(f"⚔️ **Confronto Direto (H2H Automático na BD):** {nome_p1} **{h2h_p1_bd} - {h2h_p2_bd}** {nome_p2}")
+    st.markdown("**⚔️ Correção Manual de H2H** (BD Automática preenchida)")
+    ch1, ch2 = st.columns(2)
+    h2h_p1_manual_t1 = ch1.number_input(f"Vitórias reais de {nome_p1}", value=int(h2h_p1_bd), min_value=0, step=1, key="h2h_t1_p1")
+    h2h_p2_manual_t1 = ch2.number_input(f"Vitórias reais de {nome_p2}", value=int(h2h_p2_bd), min_value=0, step=1, key="h2h_t1_p2")
 
     st.subheader("Odds Disponíveis na Casa de Apostas")
     col_o1, col_o2, col_o3, col_o4 = st.columns(4)
@@ -337,7 +280,7 @@ with tab1:
             st.error("Seleciona jogadoras/jogadores diferentes.")
         else:
             np.random.seed(42)
-            sims = [simulate_match_ml(stats_p1, stats_p2, (sets_input//2 + 1), ml_model, circuito, (h2h_p1_bd, h2h_p2_bd)) for _ in range(10000)]
+            sims = [simulate_match_ml(stats_p1, stats_p2, (sets_input//2 + 1), ml_model, circuito, (h2h_p1_manual_t1, h2h_p2_manual_t1)) for _ in range(10000)]
             
             totais = np.array([s[0] for s in sims])
             diffs = np.array([s[1] for s in sims])
@@ -393,7 +336,7 @@ with tab1:
 # ABA 2: CSV EM MASSA
 # ==========================================
 with tab2:
-    st.header("Scanner de Valor Múltiplo (Separado por vírgula)")
+    st.header("Scanner de Valor Múltiplo")
     st.markdown("`Jogador 1, Jogador 2, Odd P1, Odd P2, Linha Over, Odd Over, Linha Hcp, Odd Hcp`")
     bloco_texto_csv = st.text_area("Cola as Odds CSV aqui:", height=200, key="csv_area")
 
@@ -467,9 +410,8 @@ with tab2:
 # ==========================================
 with tab3:
     st.header("Auto-Scanner Inteligente (Copiar & Colar)")
-    st.markdown("Seleciona os jogadores do texto colado para o modelo processar os respetivos Elos e dados históricos de H2H/Forma.")
+    st.markdown("Seleciona os jogadores do texto colado para o modelo processar os respetivos Elos.")
     
-    # Seleções de jogadores
     c_scan1, c_scan2 = st.columns(2)
     scan_p1 = c_scan1.selectbox("Favorito (Player 1 no texto)", jogadores, key="tab3_p1")
     scan_p2 = c_scan2.selectbox("Underdog (Player 2 no texto)", jogadores, key="tab3_p2")
@@ -478,10 +420,10 @@ with tab3:
     stats_scan_p2 = get_player_stats(scan_p2, superficie, circuito)
     h2h_scan_vals = calculate_h2h(scan_p1, scan_p2)
 
-    # Mostrar Sumário Técnico no Scanner
-    st.info(f"📊 **Análise de BD:** Elo {scan_p1}: `{stats_scan_p1['elo']:.0f}` (Forma: `{stats_scan_p1['recent_form']:.0%}`) vs "
-            f"Elo {scan_p2}: `{stats_scan_p2['elo']:.0f}` (Forma: `{stats_scan_p2['recent_form']:.0%}`) | "
-            f"H2H BD: `{h2h_scan_vals[0]} - {h2h_scan_vals[1]}`")
+    st.markdown("**⚔️ Correção Manual de H2H** (Se a base de dados falhar torneios menores, ajusta aqui na hora)")
+    col_h1, col_h2 = st.columns(2)
+    h2h_p1_manual_t3 = col_h1.number_input(f"Vitórias reais de {scan_p1}", value=int(h2h_scan_vals[0]), min_value=0, step=1, key="h2h_t3_p1")
+    h2h_p2_manual_t3 = col_h2.number_input(f"Vitórias reais de {scan_p2}", value=int(h2h_scan_vals[1]), min_value=0, step=1, key="h2h_t3_p2")
 
     texto_odds = st.text_area("Cola as Odds da Casa de Apostas:", height=300, key="raw_text_area",
                               placeholder="Match winner\n1 — 1.34\n2 — 3.20\n...\nTotal games\nOver 21.5 — 1.66\n...")
@@ -496,7 +438,7 @@ with tab3:
                 mercados_extraidos = parse_bookmaker_text(texto_odds)
                 
                 np.random.seed(42)
-                sims = [simulate_match_ml(stats_scan_p1, stats_scan_p2, (sets_input//2 + 1), ml_model, circuito, h2h_scan_vals) for _ in range(10000)]
+                sims = [simulate_match_ml(stats_scan_p1, stats_scan_p2, (sets_input//2 + 1), ml_model, circuito, (h2h_p1_manual_t3, h2h_p2_manual_t3)) for _ in range(10000)]
                 
                 totais = np.array([s[0] for s in sims])
                 diffs = np.array([s[1] for s in sims])
@@ -508,7 +450,6 @@ with tab3:
                 
                 lista_ev = []
                 
-                # 1. Vitória Seca
                 if 'P1' in mercados_extraidos['match_winner']:
                     odd = mercados_extraidos['match_winner']['P1']
                     lista_ev.append({"Mercado": f"Vitória {scan_p1}", "Prob": prob_p1_win, "Odd": odd, "EV": (odd * prob_p1_win) - 1})
@@ -516,7 +457,6 @@ with tab3:
                     odd = mercados_extraidos['match_winner']['P2']
                     lista_ev.append({"Mercado": f"Vitória {scan_p2}", "Prob": prob_p2_win, "Odd": odd, "EV": (odd * prob_p2_win) - 1})
                 
-                # 2. Ganhar pelo menos 1 Set (+1.5 Set hcp)
                 if mercados_extraidos['p1_set']:
                     prob = np.mean(p1_sets_ganhos >= 1)
                     lista_ev.append({"Mercado": f"{scan_p1} ganha +1 Set", "Prob": prob, "Odd": mercados_extraidos['p1_set'], "EV": (mercados_extraidos['p1_set'] * prob) - 1})
@@ -524,7 +464,6 @@ with tab3:
                     prob = np.mean(p2_sets_ganhos >= 1)
                     lista_ev.append({"Mercado": f"{scan_p2} ganha +1 Set", "Prob": prob, "Odd": mercados_extraidos['p2_set'], "EV": (mercados_extraidos['p2_set'] * prob) - 1})
                     
-                # 3. Over/Under de Games (Jogos)
                 for linha_g, odds_ou in mercados_extraidos['total_games'].items():
                     if 'Over' in odds_ou:
                         prob = np.mean(totais > linha_g)
@@ -533,7 +472,6 @@ with tab3:
                         prob = np.mean(totais < linha_g)
                         lista_ev.append({"Mercado": f"Under {linha_g} Jogos", "Prob": prob, "Odd": odds_ou['Under'], "EV": (odds_ou['Under'] * prob) - 1})
                 
-                # 4. Over/Under de Sets (Ex: Over 2.5 Sets)
                 total_sets_jogados = p1_sets_ganhos + p2_sets_ganhos
                 for linha_s, odds_ou in mercados_extraidos['total_sets'].items():
                     if 'Over' in odds_ou:
@@ -543,19 +481,16 @@ with tab3:
                         prob = np.mean(total_sets_jogados < linha_s)
                         lista_ev.append({"Mercado": f"Under {linha_s} Sets", "Prob": prob, "Odd": odds_ou['Under'], "EV": (odds_ou['Under'] * prob) - 1})
                         
-                # 5. Handicaps do Player 1 (Favorito) - Positivos e Negativos
                 for hcp_linha, odd in mercados_extraidos['game_handicap']['P1'].items():
-                    prob = np.mean(diffs > -hcp_linha)  # Fórmula universal P1
+                    prob = np.mean(diffs > -hcp_linha)  
                     linha_str = f"+{hcp_linha}" if hcp_linha > 0 else f"{hcp_linha}"
                     lista_ev.append({"Mercado": f"Handicap {scan_p1} ({linha_str})", "Prob": prob, "Odd": odd, "EV": (odd * prob) - 1})
 
-                # 6. Handicaps do Player 2 (Underdog) - Positivos e Negativos
                 for hcp_linha, odd in mercados_extraidos['game_handicap']['P2'].items():
-                    prob = np.mean(diffs < hcp_linha)  # Fórmula universal P2
+                    prob = np.mean(diffs < hcp_linha)  
                     linha_str = f"+{hcp_linha}" if hcp_linha > 0 else f"{hcp_linha}"
                     lista_ev.append({"Mercado": f"Handicap {scan_p2} ({linha_str})", "Prob": prob, "Odd": odd, "EV": (odd * prob) - 1})
                     
-                # --- APRESENTAÇÃO E AUDITORIA COMPLETA ---
                 if lista_ev:
                     df_scan = pd.DataFrame(lista_ev).sort_values(by="EV", ascending=False)
                     df_scan['Status'] = df_scan['EV'].apply(lambda x: "✅ Valor" if x >= limite_ev else "❌ Evitar")
@@ -564,8 +499,6 @@ with tab3:
                     
                     if not df_scan_valor.empty:
                         df_scan_valor['Kelly_Score'] = df_scan_valor['EV'] / (df_scan_valor['Odd'] - 1)
-                        
-                        # Filtrar apenas apostas com odds consideradas aceitáveis (evita odds esmagadas)
                         df_elegiveis = df_scan_valor[df_scan_valor['Odd'] >= odd_minima_rec]
                         
                         if not df_elegiveis.empty:
@@ -583,7 +516,7 @@ with tab3:
                             f"**Odd Oferecida:** {melhor_aposta['Odd']:.2f} | "
                             f"**Probabilidade Simulada:** {melhor_aposta['Prob']:.1%} | "
                             f"**Valor Esperado (EV):** +{melhor_aposta['EV']:.1%}\n\n"
-                            f"⚖️ **Banca Sugerida:** **{sugestao_banca:.1%}** (Cálculo de Kelly Fracionário para risco controlado)."
+                            f"⚖️ **Banca Sugerida:** **{sugestao_banca:.1%}** (Cálculo de Kelly Fracionário para maximização de capital)."
                         )
                         st.markdown("---")
                     else:
