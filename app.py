@@ -189,7 +189,7 @@ def simulate_match_ml(stats_p1, stats_p2, sets_to_win, ml_model, circuito, h2h_s
         
     return total_g, diff_g, p1_sets, p2_sets, set1_p1_g, set1_p2_g, set2_p1_g, set2_p2_g, aces_p1, aces_p2
 
-# --- 5. PARSER MULTILINGUE (SUPORTE A SETS E ASES) ---
+# --- 5. PARSER MULTILINGUE (SUPORTE A SETS E ASES - BLINDAGEM MÁXIMA) ---
 def parse_bookmaker_text(text, p1_name="", p2_name=""):
     markets = {
         'match_winner': {}, 'total_games': {}, 
@@ -197,7 +197,6 @@ def parse_bookmaker_text(text, p1_name="", p2_name=""):
         'total_sets': {}, 'p1_set': None, 'p2_set': None,
         'p1_total_games': {}, 'p2_total_games': {},
         
-        # NOVOS MERCADOS
         'set1_winner': {}, 'set1_total_games': {}, 'set1_handicap': {'P1': {}, 'P2': {}},
         'set2_winner': {}, 'set2_total_games': {}, 'set2_handicap': {'P1': {}, 'P2': {}},
         'total_aces': {}, 'p1_aces': {}, 'p2_aces': {}
@@ -227,8 +226,8 @@ def parse_bookmaker_text(text, p1_name="", p2_name=""):
         if not is_odds_line:
             header = line.lower()
             
-            # Filtro de Lixo residual
-            if any(x in header for x in ["par/ímpar", "odd/even", "exato", "exact", "correct", "duplo", "double result", "only one set", "apenas um set", "vencedor e", "tie-break"]): 
+            # Filtro de Lixo residual e Mercados Combinados
+            if any(x in header for x in ["par/ímpar", "odd/even", "exato", "exact", "correct", "duplo", "double result", "only one set", "apenas um set", "vencedor e", "winner and", "vencedor &", "winner &", "tie-break", "tie break"]): 
                 current_category = "Ignored"
                 
             # IDENTIFICAR ASES
@@ -239,14 +238,19 @@ def parse_bookmaker_text(text, p1_name="", p2_name=""):
                 
             # IDENTIFICAR SET 1
             elif any(x in header for x in ["set 1", "1º set", "1o set", "primeiro set", "1st set"]):
-                if "handicap" in header: current_category = "set1_handicap"
+                # Proteger contra estatísticas individuais do 1º set que esmagam as globais
+                if any(x in header for x in p1_tokens + p2_tokens + ["player 1", "player 2", "jogador", "casa", "fora"]):
+                    current_category = "Ignored"
+                elif "handicap" in header: current_category = "set1_handicap"
                 elif any(x in header for x in ["total", "jogos", "games"]): current_category = "set1_total_games"
                 elif any(x in header for x in ["winner", "vencedor"]): current_category = "set1_winner"
                 else: current_category = "Ignored"
                 
             # IDENTIFICAR SET 2
             elif any(x in header for x in ["set 2", "2º set", "2o set", "segundo set", "2nd set"]):
-                if "handicap" in header: current_category = "set2_handicap"
+                if any(x in header for x in p1_tokens + p2_tokens + ["player 1", "player 2", "jogador", "casa", "fora"]):
+                    current_category = "Ignored"
+                elif "handicap" in header: current_category = "set2_handicap"
                 elif any(x in header for x in ["total", "jogos", "games"]): current_category = "set2_total_games"
                 elif any(x in header for x in ["winner", "vencedor"]): current_category = "set2_winner"
                 else: current_category = "Ignored"
@@ -271,9 +275,14 @@ def parse_bookmaker_text(text, p1_name="", p2_name=""):
         if current_category == "Ignored": continue
         
         try:
+            # Rede de segurança universal contra linhas de Mercados Combinados
+            if any(x in key_part for x in ["&", " and ", " e ", "+", "over", "under", "mais", "menos", "-", "/", "2:0", "0:2", "2:1", "1:2"]) and current_category in ["match_winner", "set1_winner", "set2_winner"]:
+                continue
+            if ("&" in key_part or " and " in key_part or " e " in key_part) and current_category in ["total_games", "total_sets", "p1_total_games", "p2_total_games", "set1_total_games", "set2_total_games"]:
+                continue
+
             # Processa Vencedor (Match, Set 1 ou Set 2)
             if current_category in ["match_winner", "set1_winner", "set2_winner"]:
-                if any(x in key_part for x in ["&", "+", "over", "under", "mais", "-", "/", "2:0"]): continue
                 is_p1 = any(x in key_part for x in p1_tokens + ["1", "casa", "home", "jogador 1"]) or key_part == "1"
                 is_p2 = any(x in key_part for x in p2_tokens + ["2", "fora", "away", "jogador 2"]) or key_part == "2"
                 if is_p1 and 'P1' not in markets[current_category]: markets[current_category]['P1'] = odd_val
@@ -296,12 +305,11 @@ def parse_bookmaker_text(text, p1_name="", p2_name=""):
                 m = re.search(r"([+-]?\d+\.\d+)", key_part)
                 if m:
                     hcp = float(m.group(1))
-                    if any(x in key_part for x in p1_tokens + ["1", "casa"]): markets[current_category]['P1'][hcp] = odd_val
+                    if any(x in key_part for x in p1_tokens + ["1", "casa", "jogador 1"]): markets[current_category]['P1'][hcp] = odd_val
                     else: markets[current_category]['P2'][hcp] = odd_val
         except: continue
             
     return markets
-
 # --- 6. ABAS DE TRABALHO ---
 tab1, tab2, tab3 = st.tabs(["🔍 Calculadora Manual", "🚀 CSV em Massa", "🤖 Auto-Scanner (Colar Texto)"])
 
