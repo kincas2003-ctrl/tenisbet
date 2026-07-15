@@ -2,8 +2,63 @@ import streamlit as st
 import pandas as pd
 import zipfile
 
-# 1. Carregar os dados
 @st.cache_data
+def load_data():
+    with zipfile.ZipFile("dados_resumidos.zip", 'r') as z:
+        return pd.read_csv(z.open("dados_resumidos.csv"))
+
+df = load_data()
+
+st.title("🎾 QuantBet Pro: Analisador")
+
+# Em vez de filtrar por superfície (que não temos), filtramos apenas pelos jogadores
+nome_p1 = st.selectbox("Favorito", df['player'].unique())
+nome_p2 = st.selectbox("Adversário", df['player'].unique())
+
+def calcular_probabilidade(jogador1, jogador2, df):
+    def get_stats(nome):
+        dados = df[df['player'] == nome]
+        if dados.empty: return 0.5
+        # Somamos a eficácia total de serviço (T e Wide)
+        return dados[['deuce_t', 'ad_t', 'deuce_wide', 'ad_wide']].mean().sum()
+
+    s1 = get_stats(jogador1)
+    s2 = get_stats(jogador2)
+    
+    if (s1 + s2) == 0: return 0.5
+    return (s1**1.5) / ((s1**1.5) + (s2**1.5))
+
+if st.button("Gerar Projeção Automática"):
+    prob = calcular_probabilidade(nome_p1, nome_p2, df)
+    st.write(f"### Projeção para {nome_p1}: **{prob:.2%}**")
+def load_data():
+    with zipfile.ZipFile("dados_resumidos.zip", 'r') as z:
+        return pd.read_csv(z.open("dados_resumidos.csv"))
+
+df = load_data()
+
+st.title("🎾 QuantBet Pro: Analisador")
+
+# Em vez de filtrar por superfície (que não temos), filtramos apenas pelos jogadores
+nome_p1 = st.selectbox("Favorito", df['player'].unique())
+nome_p2 = st.selectbox("Adversário", df['player'].unique())
+
+def calcular_probabilidade(jogador1, jogador2, df):
+    def get_stats(nome):
+        dados = df[df['player'] == nome]
+        if dados.empty: return 0.5
+        # Somamos a eficácia total de serviço (T e Wide)
+        return dados[['deuce_t', 'ad_t', 'deuce_wide', 'ad_wide']].mean().sum()
+
+    s1 = get_stats(jogador1)
+    s2 = get_stats(jogador2)
+    
+    if (s1 + s2) == 0: return 0.5
+    return (s1**1.5) / ((s1**1.5) + (s2**1.5))
+
+if st.button("Gerar Projeção Automática"):
+    prob = calcular_probabilidade(nome_p1, nome_p2, df)
+    st.write(f"### Projeção para {nome_p1}: **{prob:.2%}**")
 def load_data():
     with zipfile.ZipFile("dados_resumidos.zip", 'r') as z:
         return pd.read_csv(z.open("dados_resumidos.csv"))
