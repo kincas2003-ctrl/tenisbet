@@ -29,10 +29,15 @@ def get_elo(nome_jogador, superficie):
     return float(match[col].values[0])
 
 def simulate_match(elo_p1, elo_p2, sets_to_win):
-    # A diferença de Elo aplicada à probabilidade de vencer um ponto
-    # Calibração: diff de 200 pts ~ 64% de vitória por ponto no saque
+    # A fórmula Logística clássica (padrão Elo)
     diff = (elo_p1 - elo_p2) / 400
     prob_p1 = 1 / (1 + 10**(-diff))
+    
+    # ADICIONAMOS RUÍDO (Variância): 
+    # O ténis não é 100% determinístico. 
+    # Adicionamos uma pequena margem aleatória para simular o "dia mau" ou "dia bom"
+    prob_p1 = prob_p1 * 0.9 + np.random.normal(0.05, 0.05) 
+    prob_p1 = np.clip(prob_p1, 0.1, 0.9) # Limites para não ser absurdo
     
     p1_sets, p2_sets = 0, 0
     total_g, diff_g = 0, 0
@@ -40,7 +45,7 @@ def simulate_match(elo_p1, elo_p2, sets_to_win):
     while p1_sets < sets_to_win and p2_sets < sets_to_win:
         p1_g, p2_g = 0, 0
         while (p1_g < 6 and p2_g < 6) or abs(p1_g - p2_g) < 2:
-            # Simulação por games (probabilidade de ganhar o game baseada no Elo)
+            # Simulação de Game: A prob_p1 aqui é a chance de ganhar o game
             if np.random.random() < prob_p1: p1_g += 1
             else: p2_g += 1
             if p1_g == 7 or p2_g == 7: break
