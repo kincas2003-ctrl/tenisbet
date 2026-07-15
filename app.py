@@ -57,3 +57,43 @@ with col_m2:
         st.info("Handicap justo.")
 
 st.sidebar.info("QuantBet Pro: A tua ferramenta de decisão baseada em dados reais de serviço.")
+import streamlit as st
+import pandas as pd
+import zipfile
+
+# 1. Carregar os dados
+@st.cache_data
+def load_data():
+    with zipfile.ZipFile("dados_resumidos.zip", 'r') as z:
+        return pd.read_csv(z.open("dados_resumidos.csv"))
+
+df = load_data()
+
+st.title("🎾 QuantBet Pro: Analisador de Valor")
+
+# 2. Seletor de Superfície (Agora com a coluna correta)
+# Removemos valores vazios (NaN) caso existam no CSV
+superficies = [s for s in df['surface'].unique() if pd.notna(s)]
+superficie_escolhida = st.sidebar.selectbox("Escolhe a Superfície", superficies)
+
+# 3. Filtrar os dados pelo que o utilizador escolheu
+df_filtrado = df[df['surface'] == superficie_escolhida]
+
+# 4. Seleção de Jogadores (Filtrada pela superfície escolhida)
+jogadores = sorted(df_filtrado['player'].unique())
+col1, col2 = st.columns(2)
+nome_p1 = col1.selectbox("Favorito", jogadores, key="p1")
+nome_p2 = col2.selectbox("Adversário", jogadores, key="p2")
+
+# 5. Lógica de Cálculo (usando o df_filtrado para ser preciso)
+def calcular_probabilidade(p1, p2, df_sub):
+    stats1 = df_sub[df_sub['player'] == p1][['deuce_t', 'ad_t', 'deuce_wide', 'ad_wide']].mean().sum()
+    stats2 = df_sub[df_sub['player'] == p2][['deuce_t', 'ad_t', 'deuce_wide', 'ad_wide']].mean().sum()
+    
+    if (stats1 + stats2) == 0: return 0.5
+    return (stats1**1.5) / ((stats1**1.5) + (stats2**1.5))
+
+# 6. Botão de Análise
+if st.button("Gerar Projeção"):
+    prob = calcular_probabilidade(nome_p1, nome_p2, df_filtrado)
+    st.write(f"### Projeção para {nome_p1} em {superficie_escolhida}: **{prob:.2%}**")
