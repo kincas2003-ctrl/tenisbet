@@ -6,7 +6,7 @@ import os
 
 # Configuração da página
 st.set_page_config(page_title="QuantBet Pro", layout="wide")
-st.title("🎾 QuantBet Pro: Analisador Quantitativo")
+st.title("🎾 QuantBet Pro: Analisador Profissional")
 
 # --- 1. CARREGAMENTO DE DADOS ---
 @st.cache_data
@@ -16,17 +16,24 @@ def load_data():
 
 @st.cache_data
 def load_elos():
-    if os.path.exists("elos_jogadores.csv"):
-        return pd.read_csv("elos_jogadores.csv")
-    return pd.DataFrame(columns=['player', 'elo'])
+    if os.path.exists("PlayerElo.csv"):
+        return pd.read_csv("PlayerElo.csv")
+    return pd.DataFrame(columns=['Player', 'Elo', 'hElo', 'cElo', 'gElo'])
 
 df = load_data()
 df_elos = load_elos()
 
 # --- 2. FUNÇÕES DE CÁLCULO ---
-def get_elo(nome_jogador):
-    resultado = df_elos[df_elos['player'] == nome_jogador]
-    return int(resultado['elo'].values[0]) if not resultado.empty else 1500
+def get_elo_por_superficie(nome_jogador, superficie):
+    row = df_elos[df_elos['Player'].str.lower() == nome_jogador.lower()]
+    if row.empty:
+        return 1500 # Elo base
+    
+    # Seleção da coluna correta baseada na superfície
+    if superficie == 'Clay': return int(row['cElo'].values[0])
+    if superficie == 'Grass': return int(row['gElo'].values[0])
+    if superficie == 'Hard': return int(row['hElo'].values[0])
+    return int(row['Elo'].values[0])
 
 def monte_carlo_simulation(elo_p1, elo_p2, n_simulations=10000):
     prob_p1 = 1 / (1 + 10**((elo_p2 - elo_p1) / 400))
@@ -45,7 +52,7 @@ def monte_carlo_simulation(elo_p1, elo_p2, n_simulations=10000):
     return np.array(diff_resultados), np.array(total_jogos)
 
 # --- 3. INTERFACE ---
-# Filtro de Superfície (Obrigatório)
+# Filtro de Superfície (Sem opção "Todas")
 superficies = sorted([s for s in df['surface'].unique() if pd.notna(s)])
 superficie_escolhida = st.sidebar.selectbox("Escolhe a Superfície", superficies)
 df_filtrado = df[df['surface'] == superficie_escolhida]
@@ -53,13 +60,15 @@ df_filtrado = df[df['surface'] == superficie_escolhida]
 # Seleção Jogadores
 jogadores = sorted(df_filtrado['player'].unique())
 c1, c2 = st.columns(2)
-nome_p1 = c1.selectbox("Favorito", jogadores, key="p1")
-nome_p2 = c2.selectbox("Adversário", jogadores, key="p2")
+nome_p1 = c1.selectbox("Favorito", jogadores, key="p1_unique")
+nome_p2 = c2.selectbox("Adversário", jogadores, key="p2_unique")
 
-# Mostrar Elos
-elo1, elo2 = get_elo(nome_p1), get_elo(nome_p2)
-c1.metric(f"Elo {nome_p1}", elo1)
-c2.metric(f"Elo {nome_p2}", elo2)
+# Mostrar Elos Específicos da Superfície
+elo1 = get_elo_por_superficie(nome_p1, superficie_escolhida)
+elo2 = get_elo_por_superficie(nome_p2, superficie_escolhida)
+
+c1.metric(f"Elo ({superficie_escolhida})", elo1)
+c2.metric(f"Elo ({superficie_escolhida})", elo2)
 
 st.divider()
 
@@ -69,20 +78,19 @@ if st.button("Executar Simulação de Monte Carlo"):
     
     st.subheader("Resultados da Simulação (10.000 cenários)")
     
-    # Coluna 1: Vencedor e Handicap
-    with st.columns(2)[0]:
-        st.markdown("### Mercado: Vencedor/Handicap")
-        prob_vitoria = np.mean(diffs > 0)
-        st.write(f"Prob. de Vitória ({nome_p1}): **{prob_vitoria:.2%}**")
-        
-        h = st.number_input("Handicap de Jogos", value=-2.5)
+    # Resultados Vencedor/Handicap
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.markdown("### Mercado: Handicap")
+        h = st.number_input("Handicap de Jogos (ex: -2.5)", value=-2.5)
         prob_h = np.mean(diffs > abs(h)) if h < 0 else np.mean(diffs < -h)
         st.write(f"Prob. de cumprir Handicap: **{prob_h:.2%}**")
+        if prob_h > 0: st.write(f"Odd Justa: **{1/prob_h:.2f}**")
         
-    # Coluna 2: Over/Under
-    with st.columns(2)[1]:
+    # Resultados Over/Under
+    with col_b:
         st.markdown("### Mercado: Total de Jogos")
-        linha = st.number_input("Linha de Jogos", value=21.5)
+        linha = st.number_input("Linha de Jogos (ex: 21.5)", value=21.5)
         prob_over = np.mean(totais > linha)
         st.write(f"Probabilidade Over: **{prob_over:.2%}**")
         st.write(f"Probabilidade Under: **{1-prob_over:.2%}**")
