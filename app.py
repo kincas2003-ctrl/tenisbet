@@ -24,26 +24,29 @@ df = load_data()
 df_elos = load_elos()
 
 # --- 2. FUNÇÕES DE CÁLCULO ---
+def def normalize_name(name):
+    """Transforma 'De Jong, Jesper' ou 'Jesper De Jong' em 'jesper de jong'"""
+    if pd.isna(name): return ""
+    name = str(name).lower().strip()
+    if ',' in name:
+        parts = name.split(',')
+        name = f"{parts[1].strip()} {parts[0].strip()}"
+    return name
+
 def get_elo(nome_jogador, superficie):
-    if not nome_jogador or pd.isna(nome_jogador):
-        return 1500
+    if not nome_jogador: return 1500
     
-    # Normalização: remove espaços extras e coloca em minúsculas
-    nome_norm = nome_jogador.strip().lower()
+    nome_alvo = normalize_name(nome_jogador)
     
-    # Tenta encontrar no ficheiro de Elo
-    match = df_elos[df_elos['Player'].str.strip().str.lower() == nome_norm]
+    # Cria uma cópia temporária normalizada para busca
+    df_elos['temp_name'] = df_elos['Player'].apply(normalize_name)
     
-    if match.empty:
-        # Se não encontrar, tenta uma busca parcial (ex: sobrenome)
-        sobrenome = nome_norm.split()[-1]
-        match = df_elos[df_elos['Player'].str.lower().str.contains(sobrenome)]
-        
-    if match.empty:
-        return 1500
+    row = df_elos[df_elos['temp_name'] == nome_alvo]
+    
+    if row.empty: return 1500
     
     col = {'Clay': 'cElo', 'Grass': 'gElo', 'Hard': 'hElo'}.get(superficie, 'Elo')
-    return int(match[col].values[0])
+    return int(row[col].values[0])
 
 def monte_carlo_simulation(elo_p1, elo_p2, sets_to_win, n_simulations=10000):
     prob_p1 = 1 / (1 + 10**((elo_p2 - elo_p1) / 400))
