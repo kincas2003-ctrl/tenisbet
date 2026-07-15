@@ -102,3 +102,38 @@ def calcular_elo_historico(df_matches):
         elos[p2] = elo2 + k_factor * ((1 - resultado) - (1 - e1))
         
     return elos
+import numpy as np
+
+def monte_carlo_simulation(elo_p1, elo_p2, n_simulations=10000):
+    # Probabilidade de p1 ganhar um ponto
+    prob_p1 = 1 / (1 + 10**((elo_p2 - elo_p1) / 400))
+    
+    resultados = []
+    for _ in range(n_simulations):
+        # Simula um set básico (primeiro a 6 jogos)
+        p1_games = 0
+        p2_games = 0
+        while (p1_games < 6 and p2_games < 6) or abs(p1_games - p2_games) < 2:
+            if np.random.random() < prob_p1:
+                p1_games += 1
+            else:
+                p2_games += 1
+            if p1_games == 7 or p2_games == 7: break
+        resultados.append(p1_games - p2_games)
+        
+    return np.array(resultados)
+# No teu bloco de Análise (Handicap)
+with m2:
+    st.markdown("### Simulação Monte Carlo (Handicap)")
+    h_valor = st.number_input("Handicap de Jogos", value=-2.5)
+    
+    if st.button("Executar Simulação"):
+        simulacoes = monte_carlo_simulation(elo_p1, elo_p2)
+        # Calcula a % de vezes que o handicap foi batido
+        prob_handicap = np.mean(simulacoes > abs(h_valor)) if h_valor < 0 else np.mean(simulacoes < -h_valor)
+        
+        st.write(f"Probabilidade de cumprir o Handicap: **{prob_handicap:.2%}**")
+        
+        # Fair Odd (Odds Justas)
+        fair_odd = 1 / prob_handicap
+        st.write(f"Odd Justa (Fair Odd): **{fair_odd:.2f}**")
