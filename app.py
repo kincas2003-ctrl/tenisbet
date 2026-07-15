@@ -53,15 +53,40 @@ def monte_carlo_simulation(elo_p1, elo_p2, sets_to_win, n_simulations=10000):
     return np.array(total_jogos_lista), np.array(diff_sets)
 
 # --- 3. INTERFACE ---
-# Filtros
-superficie = st.sidebar.selectbox("Superfície", sorted(df['surface'].dropna().unique()))
-torneios_disponiveis = sorted(df[df['surface'] == superficie]['tournament'].unique())
-torneio_escolhido = st.sidebar.multiselect("Torneio", torneios_disponiveis, default=torneios_disponiveis[:1])
-sets_input = st.sidebar.radio("Formato do Encontro", [3, 5])
+# --- FILTROS DE INTERFACE (Seguros e Corretos) ---
 
-# Filtragem de jogadores baseada nos filtros de superfície e torneio
+# 1. Superfície
+superficies = sorted(df['surface'].dropna().unique())
+superficie = st.sidebar.selectbox("Escolhe a Superfície", superficies)
+
+# 2. Torneio (Filtrado apenas pela superfície selecionada)
+# Como a coluna 'tournament' agora existe, isto não dará mais o KeyError
+torneios_disponiveis = sorted(df[df['surface'] == superficie]['tournament'].unique())
+torneio_escolhido = st.sidebar.multiselect("Escolhe o(s) Torneio(s)", torneios_disponiveis, default=torneios_disponiveis[0] if torneios_disponiveis else [])
+
+# 3. Filtragem final do DataFrame
 df_filtrado = df[(df['surface'] == superficie) & (df['tournament'].isin(torneio_escolhido))]
+
+# Extração de jogadores do dataset já filtrado
 jogadores = sorted(df_filtrado['player'].unique())
+# --- AJUSTE: Filtro de Torneio (À prova de erro) ---
+
+# Define os filtros de forma segura
+if 'surface' in df.columns:
+    superficies = sorted([s for s in df['surface'].unique() if pd.notna(s)])
+    superficie = st.sidebar.selectbox("Superfície", superficies)
+    
+    # Verifica se a coluna tournament existe antes de filtrar
+    if 'tournament' in df.columns:
+        torneios_disponiveis = sorted(df[df['surface'] == superficie]['tournament'].unique())
+        torneio_escolhido = st.sidebar.multiselect("Torneio", torneios_disponiveis, default=torneios_disponiveis[:1])
+        df_filtrado = df[(df['surface'] == superficie) & (df['tournament'].isin(torneio_escolhido))]
+    else:
+        st.sidebar.warning("Coluna 'tournament' não encontrada no ficheiro.")
+        df_filtrado = df[df['surface'] == superficie]
+else:
+    st.error("Coluna 'surface' não encontrada no ficheiro.")
+    st.stop()
 
 c1, c2 = st.columns(2)
 nome_p1 = c1.selectbox("Favorito", jogadores, key="p1")
