@@ -132,17 +132,19 @@ def simulate_match_ml(stats_p1, stats_p2, sets_to_win, ml_model, circuito):
 
 # --- 5. PARSER DE TEXTO BRUTO DAS ODDS ---
 # --- 5. PARSER DE TEXTO BRUTO DAS ODDS (REGEX AVANÇADO) ---
+# --- 5. PARSER DE TEXTO BRUTO DAS ODDS (REGEX AVANÇADO) ---
 def parse_bookmaker_text(text):
     """Lê o texto bruto de qualquer casa de apostas e extrai as linhas e odds de forma flexível."""
     markets = {
         'match_winner': {},
         'total_games': {}, 
         'game_handicap': {},
+        'total_sets': {}, # NOVO: Dicionário para guardar as linhas de Sets
         'p1_set': None,
         'p2_set': None
     }
     
-    current_category = None
+    current_category = "Ignored"
     
     for line in text.split('\n'):
         line = line.strip()
@@ -150,37 +152,32 @@ def parse_bookmaker_text(text):
         
         line_lower = line.lower()
         
-        # 1. Identificar Categorias (Imune a variações de texto)
-        if line_lower in ["match winner", "winner", "vencedor"]:
-            current_category = "match_winner"
-            continue
-        elif line_lower in ["total games", "total de jogos"]:
-            current_category = "total_games"
-            continue
-        elif line_lower in ["game handicap", "handicap of games", "handicap de jogos"]:
-            current_category = "game_handicap"
-            continue
-        elif line_lower == "player 1 to win at least one set?":
-            current_category = "p1_set"
-            continue
-        elif line_lower == "player 2 to win at least one set?":
-            current_category = "p2_set"
-            continue
-            
-        # Ignorar categorias que não interessam para o EV do jogo completo
-        if "set 1" in line_lower or "set 2" in line_lower or "odd/even" in line_lower or ("player" in line_lower and "total games" in line_lower):
-            current_category = "Ignored"
-            continue
-            
-        # Se a linha não tiver um separador de odd (como ":" ou "—" ou "-"), ignorar
+        # --- 1. DETEÇÃO DE CABEÇALHOS FORTALECIDA ---
         if ":" not in line and "—" not in line and " - " not in line:
+            if "set 1" in line_lower or "set 2" in line_lower or "odd/even" in line_lower or ("player" in line_lower and "total games" in line_lower):
+                current_category = "Ignored"
+            elif line_lower in ["match winner", "winner", "vencedor"]:
+                current_category = "match_winner"
+            elif line_lower in ["total games", "total de jogos"]:
+                current_category = "total_games"
+            elif line_lower in ["total sets", "total de sets"]:
+                current_category = "total_sets"
+            elif line_lower in ["game handicap", "handicap of games", "handicap de jogos"]:
+                current_category = "game_handicap"
+            elif "player 1 to win at least one set" in line_lower:
+                current_category = "p1_set"
+            elif "player 2 to win at least one set" in line_lower:
+                current_category = "p2_set"
+            else:
+                current_category = "Ignored"
             continue
             
-        # 2. Extrair a chave e a odd
-        # Normalizamos o separador para os dois pontos ":" para facilitar a divisão
+        if current_category == "Ignored":
+            continue
+            
+        # --- 2. EXTRAÇÃO DE ODDS ---
         line_clean = line.replace(" — ", ":").replace(" - ", ":")
         parts = line_clean.split(":")
-        
         if len(parts) < 2: continue
         
         key = parts[0].strip().lower()
@@ -189,27 +186,29 @@ def parse_bookmaker_text(text):
         except ValueError:
             continue
 
-        # 3. Guardar nos dicionários corretos
+        # --- 3. ALOCAÇÃO INTELIGENTE ---
         if current_category == "match_winner":
             if key in ["player 1", "1"]: markets['match_winner']['P1'] = odd
             elif key in ["player 2", "2"]: markets['match_winner']['P2'] = odd
                 
-        elif current_category == "total_games":
+        elif current_category in ["total_games", "total_sets"]:
             m = re.match(r"(over|under)\s+(\d+\.\d+)", key)
             if m:
-                ou = m.group(1).capitalize() # Fica 'Over' ou 'Under'
+                ou = m.group(1).capitalize()
                 line_val = float(m.group(2))
-                if line_val not in markets['total_games']: 
-                    markets['total_games'][line_val] = {}
-                markets['total_games'][line_val][ou] = odd
+                
+                # SALVAGUARDA MATEMÁTICA: Linhas pequenas são obrigatoriamente Sets
+                target_dict = 'total_sets' if line_val < 6.0 else 'total_games'
+                
+                if line_val not in markets[target_dict]: 
+                    markets[target_dict][line_val] = {}
+                markets[target_dict][line_val][ou] = odd
                 
         elif current_category == "game_handicap":
-            # Apanha "Player 1 (-2.5)" ou apenas "1 (-2.5)"
             m = re.match(r"(?:player )?(1|2)\s*\(([+-]?\d+\.\d+)\)", key)
             if m:
                 player_num = m.group(1)
                 hcp_val = float(m.group(2))
-                # Guardamos a linha sempre na perspetiva do Jogador 1
                 if player_num == "1":
                     markets['game_handicap'][hcp_val] = odd
                     
@@ -437,6 +436,15 @@ with tab3:
                     if 'Under' in odds_ou:
                         prob = np.mean(totais < linha_g)
                         lista_ev.append({"Mercado": f"Under {linha_g} Jogos", "Prob": prob, "Odd": odds_ou['Under'], "EV": (odds_ou['Under'] * prob) - 1})
+                        # === NOVO: Avaliar Total de Sets (Ex: Over 2.5) ===
+                total_sets_jogados = p1_sets_ganhos + p2_sets_ganhos
+                for linha_s, odds_ou in mercados_extraidos['total_sets'].items():
+                    if 'Over' in odds_ou:
+                        prob = np.mean(total_sets_jogados > linha_s)
+                        lista_ev.append({"Mercado": f"Over {linha_s} Sets", "Prob": prob, "Odd": odds_ou['Over'], "EV": (odds_ou['Over'] * prob) - 1})
+                    if 'Under' in odds_ou:
+                        prob = np.mean(total_sets_jogados < linha_s)
+                        lista_ev.append({"Mercado": f"Under {linha_s} Sets", "Prob": prob, "Odd": odds_ou['Under'], "EV": (odds_ou['Under'] * prob) - 1})
                         
                 for hcp_linha, odd in mercados_extraidos['game_handicap'].items():
                     prob = np.mean(diffs > abs(hcp_linha)) if hcp_linha < 0 else np.mean(diffs < -hcp_linha)
