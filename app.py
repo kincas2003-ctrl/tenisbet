@@ -35,4 +35,53 @@ elif mercado == "Handicap de Jogos":
         if diferenca > 0:
             st.success(f"Valor no Handicap! A tua projeção supera a casa em {diferenca:.1f} jogos.")
         else:
-            st.info("O mercado está eficiente. Sem valor claro no Handicap.")
+            st.info("O mercado está eficiente. Sem valor claro no Handicap.") 
+            import pandas as pd
+
+def projetar_resultado(jogador1, jogador2, df):
+    # Filtra dados históricos dos jogadores
+    stats_j1 = df[df['Player'] == jogador1]['win_rate_clay'].mean()
+    stats_j2 = df[df['Player'] == jogador2]['win_rate_clay'].mean()
+    
+    # Projeção simples: diferença de performance como base da probabilidade
+    # (Podes tornar esta fórmula tão complexa quanto quiseres)
+    prob_base = 0.5 + (stats_j1 - stats_j2)
+    return prob_base
+
+# No Streamlit, agora fazes isto:
+nome_p1 = st.text_input("Nome do Favorito")
+nome_p2 = st.text_input("Nome do Adversário")
+
+if st.button("Gerar Projeção Automática"):
+    df = pd.read_csv("atp_odds.csv") # O teu ficheiro com histórico
+    prob_proj = projetar_resultado(nome_p1, nome_p2, df)
+    st.write(f"O modelo projeta {prob_proj:.2%} de vitória para {nome_p1}")
+    import pandas as pd
+import glob
+import os
+
+def obter_stats_jogador(nome_jogador, pasta_path):
+    # Procura todos os ficheiros CSV na pasta
+    ficheiros = glob.glob(os.path.join(pasta_path, "*.csv"))
+    
+    # Lista para guardar os dados filtrados
+    dados_jogador = []
+    
+    for f in ficheiros:
+        df = pd.read_csv(f, low_memory=False)
+        # Filtra jogos onde o jogador participou
+        stats = df[(df['match_winner'] == nome_jogador) | (df['match_loser'] == nome_jogador)]
+        dados_jogador.append(stats)
+        
+    return pd.concat(dados_jogador) 
+import streamlit as st
+import pandas as pd
+import zipfile
+
+@st.cache_data
+def load_data():
+    # Abre o zip e lê o CSV que está lá dentro
+    with zipfile.ZipFile("dados_resumidos.zip", 'r') as z:
+        return pd.read_csv(z.open("dados_resumidos.csv"))
+
+df = load_data()
