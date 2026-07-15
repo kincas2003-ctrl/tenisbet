@@ -170,8 +170,8 @@ def simulate_match_ml(stats_p1, stats_p2, sets_to_win, ml_model, circuito, h2h_s
         
     return total_g, diff_g, p1_sets, p2_sets
 
-# --- 5. PARSER MULTILINGUE DE TEXTO BRUTO DAS ODDS (BLINDADO - EN & PT) ---
-def parse_bookmaker_text(text):
+# --- 5. PARSER MULTILINGUE AVANÇADO (COM TOKENIZAÇÃO DE NOMES) ---
+def parse_bookmaker_text(text, p1_name="", p2_name=""):
     markets = {
         'match_winner': {}, 'total_games': {}, 
         'game_handicap': {'P1': {}, 'P2': {}}, 
@@ -180,6 +180,10 @@ def parse_bookmaker_text(text):
         'p1_total_games': {}, 'p2_total_games': {}
     }
     current_category = "Ignored"
+    
+    # Criar tokens dos apelidos dos jogadores (ignorando nomes minúsculos)
+    p1_tokens = [t.lower() for t in p1_name.replace(",", " ").split() if len(t) > 2]
+    p2_tokens = [t.lower() for t in p2_name.replace(",", " ").split() if len(t) > 2]
     
     for line in text.split('\n'):
         line = line.strip()
@@ -196,44 +200,47 @@ def parse_bookmaker_text(text):
         if ":" in line_clean:
             parts = line_clean.rsplit(":", 1)
             if len(parts) == 2:
-                potential_odd = parts[1].strip().replace(",", ".")
                 try:
-                    odd_val = float(potential_odd)
+                    odd_val = float(parts[1].strip().replace(",", "."))
                     key_part = parts[0].strip().lower()
                     is_odds_line = True
                 except ValueError:
                     pass
         
-        # Identificar Cabeçalho com Hierarquia Rigorosa e Suporte Total a Português
+        # Identificar Cabeçalho com cruzamento de Tokens dos Jogadores
         if not is_odds_line:
             clean_header = line_lower.replace(":", "").strip()
             
-            # 1. Filtro absoluto de Lixo/Mercados de Set Específico ou mercados secundários
+            # 1. Filtro de lixo / set específico
             if any(x in clean_header for x in ["set 1", "set 2", "1º set", "2º set", "1o set", "2o set", "odd/even", "par/ímpar", "par/impar", "exact score", "correct score", "resultado exato", "resultado correto", "double result", "resultado duplo", "only one set", "apenas um set"]):
                 current_category = "Ignored"
-            # 2. Handicap de Sets do Encontro Inteiro
-            elif "handicap" in clean_header and ("sets" in clean_header or "set handicap" in clean_header or "handicap set" in clean_header):
+            # 2. Handicap de Sets
+            elif "handicap" in clean_header and any(x in clean_header for x in ["sets", "set handicap", "handicap de set", "handicap em sets"]):
                 current_category = "set_handicap"
-            # 3. Totais Individuais de Jogos
-            elif ("player 1" in clean_header or "jogador 1" in clean_header) and ("total games" in clean_header or "total de jogos" in clean_header or "total de games" in clean_header):
-                current_category = "p1_total_games"
-            elif ("player 2" in clean_header or "jogador 2" in clean_header) and ("total games" in clean_header or "total de jogos" in clean_header or "total de games" in clean_header):
-                current_category = "p2_total_games"
-            # 4. Totais Globais
-            elif "total games" in clean_header or "total de jogos" in clean_header or "total de games" in clean_header or "match total games" in clean_header:
-                current_category = "total_games"
-            elif "total sets" in clean_header or "total de sets" in clean_header:
+            # 3. Totais Individuais e Globais de Jogos
+            elif any(x in clean_header for x in ["total games", "total de jogos", "total de games", "jogos no encontro"]):
+                if any(x in clean_header for x in p1_tokens + ["player 1", "jogador 1", "casa", "home"]):
+                    current_category = "p1_total_games"
+                elif any(x in clean_header for x in p2_tokens + ["player 2", "jogador 2", "fora", "away"]):
+                    current_category = "p2_total_games"
+                else:
+                    current_category = "total_games"
+            # 4. Totais Sets
+            elif "total sets" in clean_header or "total de sets" in clean_header or "sets no encontro" in clean_header:
                 current_category = "total_sets"
-            # 5. Handicap de Jogos Global
+            # 5. Handicap Jogos Global
             elif "handicap" in clean_header:
                 current_category = "game_handicap"
             # 6. Ganhar pelo menos um set
-            elif "player 1 to win" in clean_header or "jogador 1 ganha" in clean_header or "jogador 1 para ganhar um set" in clean_header or "jogador 1 vencer pelo menos" in clean_header or "player 1 para ganhar" in clean_header:
-                current_category = "p1_set"
-            elif "player 2 to win" in clean_header or "jogador 2 ganha" in clean_header or "jogador 2 para ganhar um set" in clean_header or "jogador 2 vencer pelo menos" in clean_header or "player 2 para ganhar" in clean_header:
-                current_category = "p2_set"
+            elif any(x in clean_header for x in ["to win at least one set", "para ganhar um set", "vencer pelo menos", "ganha +1 set", "ganha um set", "vence um set"]):
+                if any(x in clean_header for x in p1_tokens + ["player 1", "jogador 1", "casa"]):
+                    current_category = "p1_set"
+                elif any(x in clean_header for x in p2_tokens + ["player 2", "jogador 2", "fora"]):
+                    current_category = "p2_set"
+                else:
+                    current_category = "Ignored"
             # 7. Vencedor do Encontro
-            elif any(x in clean_header for x in ["winner", "vencedor", "match winner", "resultado final", "1x2"]):
+            elif any(x in clean_header for x in ["winner", "vencedor", "match winner", "resultado final", "1x2", "vence o encontro"]):
                 current_category = "match_winner"
             else:
                 current_category = "Ignored"
@@ -242,34 +249,35 @@ def parse_bookmaker_text(text):
         if current_category == "Ignored":
             continue
             
-        # Processamento das Odds (Normalizando chaves EN e PT)
+        # Processamento das Odds Inteligente
         try:
             key_lower = key_part.replace(",", ".").strip()
             
             if current_category == "match_winner":
-                if key_lower in ["player 1", "1", "jogador 1", "casa", "home", "yes", "sim"]: markets['match_winner']['P1'] = odd_val
-                elif key_lower in ["player 2", "2", "jogador 2", "fora", "away", "no", "não", "nao"]: markets['match_winner']['P2'] = odd_val
+                is_p1 = any(tok in key_lower for tok in p1_tokens + ["player 1", "jogador 1", "casa", "home", "yes", "sim"]) or key_lower == "1"
+                is_p2 = any(tok in key_lower for tok in p2_tokens + ["player 2", "jogador 2", "fora", "away", "no", "não", "nao"]) or key_lower == "2"
+                if is_p1: markets['match_winner']['P1'] = odd_val
+                elif is_p2: markets['match_winner']['P2'] = odd_val
                 
             elif current_category in ["total_games", "total_sets", "p1_total_games", "p2_total_games"]:
-                m = re.search(r"(over|under|mais de|menos de|acima de|abaixo de|mais|menos|acima|abaixo)\s+(\d+\.\d+)", key_lower)
+                m = re.search(r"(over|under|mais de|menos de|acima de|abaixo de|mais|menos|acima|abaixo)\s*([+-]?\d+\.\d+)", key_lower)
                 if m:
                     ou_word = m.group(1)
                     val = float(m.group(2))
                     ou = "Over" if ou_word in ["over", "mais de", "acima de", "mais", "acima"] else "Under"
                     
-                    if current_category == "total_games":
-                        target = 'total_sets' if val < 6.0 else 'total_games'
-                    else:
-                        target = current_category
+                    target = 'total_sets' if (current_category == "total_games" and val < 6.0) else current_category
                     if val not in markets[target]: markets[target][val] = {}
                     markets[target][val][ou] = odd_val
                     
             elif current_category in ["game_handicap", "set_handicap"]:
-                m = re.search(r"(?:player|jogador|casa|fora|home|away)?\s*(1|2)\s*\(?([+-]?\d+\.\d+)\)?", key_lower)
+                m = re.search(r"([+-]?\d+\.\d+)", key_lower)
                 if m:
-                    p_num, hcp = m.group(1), float(m.group(2))
-                    if p_num == "1": markets[current_category]['P1'][hcp] = odd_val
-                    else: markets[current_category]['P2'][hcp] = odd_val
+                    hcp = float(m.group(1))
+                    is_p1 = any(tok in key_lower for tok in p1_tokens + ["player 1", "jogador 1", "casa", "home"]) or re.search(r"^1\b", key_lower)
+                    is_p2 = any(tok in key_lower for tok in p2_tokens + ["player 2", "jogador 2", "fora", "away"]) or re.search(r"^2\b", key_lower)
+                    if is_p1: markets[current_category]['P1'][hcp] = odd_val
+                    elif is_p2: markets[current_category]['P2'][hcp] = odd_val
                     
             elif current_category == "p1_set" and any(x in key_lower for x in ["yes", "sim"]): markets['p1_set'] = odd_val
             elif current_category == "p2_set" and any(x in key_lower for x in ["yes", "sim"]): markets['p2_set'] = odd_val
@@ -474,7 +482,7 @@ with tab3:
             st.warning("Cola o texto com as odds primeiro.")
         else:
             with st.spinner("A simular e a analisar todas as linhas detetadas..."):
-                mercados_extraidos = parse_bookmaker_text(texto_odds)
+                mercados_extraidos = parse_bookmaker_text(texto_odds, scan_p1, scan_p2)
                 
                 # Executar 10.000 simulações deterministicamente estáveis
                 np.random.seed(42)
