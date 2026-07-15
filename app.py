@@ -156,16 +156,19 @@ limite_ev = st.sidebar.slider("Limite de EV Aceitável (%)", min_value=1.0, max_
 
 st.divider()
 
+if # --- 5. SIMULAÇÃO E RESULTADOS (SUBSTITUI DAQUI ATÉ AO FIM DO TEU APP.PY) ---
 if st.button("Executar Sistema Quantitativo"):
     if nome_p1 == nome_p2:
         st.error("Seleciona jogadoras/jogadores diferentes.")
     else:
+        # Executa 5000 simulações
         sims = [simulate_match_ml(stats_p1, stats_p2, (sets_input//2 + 1), ml_model, circuito) for _ in range(5000)]
         totais = np.array([s[0] for s in sims])
         diffs = np.array([s[1] for s in sims])
         p1_sets_ganhos = np.array([s[2] for s in sims])
         p2_sets_ganhos = np.array([s[3] for s in sims])
         
+        # Probabilidades do Modelo
         prob_p1_win = np.mean(p1_sets_ganhos > p2_sets_ganhos)
         prob_p2_win = 1 - prob_p1_win
         
@@ -179,7 +182,7 @@ if st.button("Executar Sistema Quantitativo"):
         prob_p2_set = np.mean(p2_sets_ganhos >= 1)
         odd_justa_p2_set = 1 / prob_p2_set if prob_p2_set > 0 else 999.0
         
-        # Cálculos de EV
+        # Cálculos de EV (Valor Esperado)
         ev_p1 = (odd_p1_casa * prob_p1_win) - 1
         ev_p2 = (odd_p2_casa * prob_p2_win) - 1
         ev_over = (odd_over_casa * prob_over) - 1
@@ -212,15 +215,15 @@ if st.button("Executar Sistema Quantitativo"):
         
         # Métricas Secundárias
         col_sec1, col_sec2 = st.columns(2)
-        col_sec1.metric(f"Média de Jogos Previstos", f"{np.mean(totais):.1f}")
+        col_sec1.metric("Média de Jogos Previstos", f"{np.mean(totais):.1f}")
         col_sec2.metric(f"Probabilidade {nome_p2} Ganhar +1 Set", f"{prob_p2_set:.1%}", help=f"Odd Justa: {odd_justa_p2_set:.2f}")
         
         st.write("### Detalhes de Auditoria de Odds")
-        st.dataframe(
-            df_resultados.style.format({
-                "EV": "{:.2%}",
-                "Odd Casa": "{:.2f}",
-                "Prob": "{:.2%}"
-            })
-        )
-        )
+        
+        # Formatação segura sem encadeamento de parênteses quebrados
+        df_formatado = df_resultados.copy()
+        df_formatado['EV'] = df_formatado['EV'].apply(lambda x: f"{x:.2%}")
+        df_formatado['Odd Casa'] = df_formatado['Odd Casa'].apply(lambda x: f"{x:.2f}")
+        df_formatado['Prob'] = df_formatado['Prob'].apply(lambda x: f"{x:.2%}")
+        
+        st.dataframe(df_formatado)
