@@ -131,9 +131,9 @@ def simulate_match_ml(stats_p1, stats_p2, sets_to_win, ml_model, circuito):
     return total_g, diff_g, p1_sets, p2_sets
 
 # --- 5. PARSER DE TEXTO BRUTO DAS ODDS ---
-# --- 5. PARSER DE TEXTO BRUTO DAS ODDS (REGEX) ---
+# --- 5. PARSER DE TEXTO BRUTO DAS ODDS (REGEX AVANÇADO) ---
 def parse_bookmaker_text(text):
-    """Lê o texto bruto da casa de apostas e extrai as linhas e odds de todos os mercados."""
+    """Lê o texto bruto de qualquer casa de apostas e extrai as linhas e odds de forma flexível."""
     markets = {
         'match_winner': {},
         'total_games': {}, 
@@ -148,43 +148,77 @@ def parse_bookmaker_text(text):
         line = line.strip()
         if not line: continue
         
-        # O SEGREDO: Se a linha não tem dois pontos ":", é um novo cabeçalho!
-        # Isto evita que estatísticas desconhecidas contaminem os dados das anteriores.
-        if ":" not in line:
-            current_category = line
+        line_lower = line.lower()
+        
+        # 1. Identificar Categorias (Imune a variações de texto)
+        if line_lower in ["match winner", "winner", "vencedor"]:
+            current_category = "match_winner"
+            continue
+        elif line_lower in ["total games", "total de jogos"]:
+            current_category = "total_games"
+            continue
+        elif line_lower in ["game handicap", "handicap of games", "handicap de jogos"]:
+            current_category = "game_handicap"
+            continue
+        elif line_lower == "player 1 to win at least one set?":
+            current_category = "p1_set"
+            continue
+        elif line_lower == "player 2 to win at least one set?":
+            current_category = "p2_set"
             continue
             
-        if current_category == "Match winner":
-            if line.startswith("Player 1:"): 
-                markets['match_winner']['P1'] = float(line.split(":")[1].strip())
-            elif line.startswith("Player 2:"): 
-                markets['match_winner']['P2'] = float(line.split(":")[1].strip())
+        # Ignorar categorias que não interessam para o EV do jogo completo
+        if "set 1" in line_lower or "set 2" in line_lower or "odd/even" in line_lower or ("player" in line_lower and "total games" in line_lower):
+            current_category = "Ignored"
+            continue
+            
+        # Se a linha não tiver um separador de odd (como ":" ou "—" ou "-"), ignorar
+        if ":" not in line and "—" not in line and " - " not in line:
+            continue
+            
+        # 2. Extrair a chave e a odd
+        # Normalizamos o separador para os dois pontos ":" para facilitar a divisão
+        line_clean = line.replace(" — ", ":").replace(" - ", ":")
+        parts = line_clean.split(":")
+        
+        if len(parts) < 2: continue
+        
+        key = parts[0].strip().lower()
+        try:
+            odd = float(parts[1].strip())
+        except ValueError:
+            continue
+
+        # 3. Guardar nos dicionários corretos
+        if current_category == "match_winner":
+            if key in ["player 1", "1"]: markets['match_winner']['P1'] = odd
+            elif key in ["player 2", "2"]: markets['match_winner']['P2'] = odd
                 
-        elif current_category == "Total games":
-            m = re.match(r"(Over|Under) (\d+\.\d+): (\d+\.\d+)", line)
+        elif current_category == "total_games":
+            m = re.match(r"(over|under)\s+(\d+\.\d+)", key)
             if m:
-                ou, line_val, odd = m.groups()
-                line_val, odd = float(line_val), float(odd)
+                ou = m.group(1).capitalize() # Fica 'Over' ou 'Under'
+                line_val = float(m.group(2))
                 if line_val not in markets['total_games']: 
                     markets['total_games'][line_val] = {}
                 markets['total_games'][line_val][ou] = odd
                 
-        elif current_category == "Game handicap":
-            m = re.match(r"(Player 1|Player 2) \(([+-]?\d+\.\d+)\): (\d+\.\d+)", line)
+        elif current_category == "game_handicap":
+            # Apanha "Player 1 (-2.5)" ou apenas "1 (-2.5)"
+            m = re.match(r"(?:player )?(1|2)\s*\(([+-]?\d+\.\d+)\)", key)
             if m:
-                player, hcp_val, odd = m.groups()
-                hcp_val, odd = float(hcp_val), float(odd)
-                if player == "Player 1":
+                player_num = m.group(1)
+                hcp_val = float(m.group(2))
+                # Guardamos a linha sempre na perspetiva do Jogador 1
+                if player_num == "1":
                     markets['game_handicap'][hcp_val] = odd
                     
-        elif current_category == "Player 1 to win at least one set?":
-            if line.startswith("Yes:"): 
-                markets['p1_set'] = float(line.split(":")[1].strip())
+        elif current_category == "p1_set":
+            if key == "yes": markets['p1_set'] = odd
                 
-        elif current_category == "Player 2 to win at least one set?":
-            if line.startswith("Yes:"): 
-                markets['p2_set'] = float(line.split(":")[1].strip())
-                
+        elif current_category == "p2_set":
+            if key == "yes": markets['p2_set'] = odd
+            
     return markets
 
 # --- 6. ABAS DE TRABALHO ---
