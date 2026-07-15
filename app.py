@@ -46,17 +46,17 @@ else:
     st.sidebar.success("🤖 Motor: XGBoost Calibrado")
 
 df_elos = load_elos(circuito)
-
 superficie = st.sidebar.selectbox("Superfície", sorted(df['surface'].dropna().unique()))
-
 sets_padrao = [3] if circuito == "WTA (Feminino)" else [3, 5]
 sets_input = st.sidebar.radio("Sets do Encontro", sets_padrao)
 
 jogadores = sorted(df_elos['Player'].dropna().unique())
 
+st.sidebar.header("2. Filtros de Valor")
 limite_ev = st.sidebar.slider("Limite de EV Aceitável (%)", min_value=1.0, max_value=15.0, value=5.0, step=0.5) / 100
+odd_minima_rec = st.sidebar.number_input("Odd Mínima Recomendada", value=1.50, step=0.05, help="O sistema vai ignorar odds abaixo deste valor ao escolher a Melhor Aposta.")
 
-# --- 3. ENGENHARIA DE FEATURES ---
+# --- 3. ENGENHARIA DE FEATURES "ON-THE-FLY" ---
 def get_player_stats(nome_jogador, superficie):
     if not nome_jogador or pd.isna(nome_jogador):
         return {"elo": 1500, "hold_rate": 0.78 if circuito == "ATP (Masculino)" else 0.635, "fatigue": 0}
@@ -130,9 +130,9 @@ def simulate_match_ml(stats_p1, stats_p2, sets_to_win, ml_model, circuito):
         
     return total_g, diff_g, p1_sets, p2_sets
 
-# --- 5. PARSER DE TEXTO BRUTO DAS ODDS (MÉTODO ULTRA-ROBUSTO) ---
+# --- 5. PARSER DE TEXTO BRUTO DAS ODDS (REGEX ULTRA-ROBUSTO) ---
 def parse_bookmaker_text(text):
-    """Lê o texto bruto de qualquer casa de apostas e extrai as odds de forma imune a erros."""
+    """Lê o texto bruto de qualquer casa de apostas e extrai as linhas e odds de forma imune a erros."""
     markets = {
         'match_winner': {},
         'total_games': {}, 
@@ -147,11 +147,9 @@ def parse_bookmaker_text(text):
     for line in text.split('\n'):
         line = line.strip()
         if not line: continue
-        
         line_lower = line.lower()
         
-        # 1. IDENTIFICAR SE É UMA LINHA DE ODD OU CABEÇALHO
-        # Procuramos o último separador para testar se termina com um número (odd)
+        # Detetar separadores de odds comuns
         idx_em = line.rfind("—")
         idx_col = line.rfind(":")
         idx_hyp = line.rfind(" - ")
@@ -164,22 +162,23 @@ def parse_bookmaker_text(text):
                 last_sep = sep
                 
         is_odd_line = False
-        key = ""
+        key_part = ""
         odd = 0.0
         
         if last_idx != -1:
             key_part = line[:last_idx].strip()
-            odd_part = line[last_idx + len(last_sep):].strip()
+            odd_part = line[last_idx + len(last_sep):].strip().replace(",", ".")
             try:
                 odd = float(odd_part)
-                key = key_part
                 is_odd_line = True
             except ValueError:
                 pass
                 
-        # 2. SE FOR UM CABEÇALHO (Muda de categoria ou ignora)
+        # Se for um Cabeçalho de Categoria
         if not is_odd_line:
-            if line_lower in ["match winner", "winner", "vencedor"]:
+            if "set 1" in line_lower or "set 2" in line_lower or "odd/even" in line_lower or ("player" in line_lower and "total games" in line_lower):
+                current_category = "Ignored"
+            elif line_lower in ["match winner", "winner", "vencedor"]:
                 current_category = "match_winner"
             elif line_lower in ["total games", "total de jogos"]:
                 current_category = "total_games"
@@ -192,15 +191,15 @@ def parse_bookmaker_text(text):
             elif "player 2 to win at least one set" in line_lower:
                 current_category = "p2_set"
             else:
-                # Qualquer outra categoria desconhecida (ex: Set 1, Correct Score) é ignorada
                 current_category = "Ignored"
             continue
             
-        if current_category == "Ignored":
+        if current_category == "Ignored": 
             continue
             
-        # 3. ALOCAR ODDS DE FORMA SEGURA
-        key_lower = key.lower()
+        # Limpar chave para lidar com formatos em português e decimais (ex: '2,5' -> '2.5')
+        key_lower = key_part.lower().replace(",", ".")
+        
         if current_category == "match_winner":
             if key_lower in ["player 1", "1"]: markets['match_winner']['P1'] = odd
             elif key_lower in ["player 2", "2"]: markets['match_winner']['P2'] = odd
@@ -211,7 +210,7 @@ def parse_bookmaker_text(text):
                 ou = m.group(1).capitalize()
                 line_val = float(m.group(2))
                 
-                # Salvaguarda: Se a linha for menor que 6.0, são sets!
+                # Salvaguarda: Se a linha de Over/Under for menor que 6.0, refere-se garantidamente a Sets!
                 target_dict = 'total_sets' if line_val < 6.0 else 'total_games'
                 if line_val not in markets[target_dict]: 
                     markets[target_dict][line_val] = {}
@@ -222,7 +221,7 @@ def parse_bookmaker_text(text):
             if m:
                 player_num = m.group(1)
                 hcp_val = float(m.group(2))
-                if player_num == "1":
+                if player_num == "1": 
                     markets['game_handicap'][hcp_val] = odd
                     
         elif current_category == "p1_set":
@@ -404,7 +403,7 @@ with tab3:
     stats_scan_p2 = get_player_stats(scan_p2, superficie)
 
     texto_odds = st.text_area("Cola as Odds da Casa de Apostas:", height=300, key="raw_text_area",
-                              placeholder="Match winner\nPlayer 1: 2.18\nPlayer 2: 1.67\n...\nTotal games\nOver 21.5: 1.66\n...")
+                              placeholder="Match winner\n1 — 1.34\n2 — 3.20\n...\nTotal games\nOver 21.5 — 1.66\n...")
     
     if st.button("Analisar Todas as Odds (Scan Texto)", key="btn_tab3"):
         if scan_p1 == scan_p2:
@@ -468,52 +467,55 @@ with tab3:
                     prob = np.mean(diffs > abs(hcp_linha)) if hcp_linha < 0 else np.mean(diffs < -hcp_linha)
                     lista_ev.append({"Mercado": f"Handicap {scan_p1} ({hcp_linha})", "Prob": prob, "Odd": odd, "EV": (odd * prob) - 1})
                     
-                # APRESENTAÇÃO DOS RESULTADOS E RECOMENDAÇÃO INTELIGENTE
+                # APRESENTAÇÃO E AUDITORIA COMPLETA
                 if lista_ev:
                     df_scan = pd.DataFrame(lista_ev).sort_values(by="EV", ascending=False)
+                    
+                    # Coluna Status para TODAS as odds (Boas e Más)
+                    df_scan['Status'] = df_scan['EV'].apply(lambda x: "✅ Valor" if x >= limite_ev else "❌ Evitar")
+                    
+                    # Lógica da Aposta Recomendada (Filtrando as odds muito baixas)
                     df_scan_valor = df_scan[df_scan['EV'] >= limite_ev].copy()
                     
                     if not df_scan_valor.empty:
-                        # Cálculo de Risco/Benefício com base no Critério de Kelly
+                        # Cálculo Kelly
                         df_scan_valor['Kelly_Score'] = df_scan_valor['EV'] / (df_scan_valor['Odd'] - 1)
                         
-                        # A melhor aposta é a que maximiza o retorno com menor volatilidade de banca
-                        melhor_aposta = df_scan_valor.loc[df_scan_valor['Kelly_Score'].idxmax()]
+                        # FILTRO DE SEGURANÇA: Recomendar apenas odds maiores ou iguais à odd mínima regulada
+                        df_elegiveis = df_scan_valor[df_scan_valor['Odd'] >= odd_minima_rec]
                         
-                        # Sugerimos usar 10% do valor de Kelly (Kelly Fracionário) para gestão de banca conservadora
-                        sugestao_banca = float(melhor_aposta['Kelly_Score'] * 10.0) # Converter para percentagem recomendada
-                        sugestao_banca = np.clip(sugestao_banca, 0.5, 3.5) # Limites rígidos de segurança de gestão profissional (0.5% a 3.5%)
+                        if not df_elegiveis.empty:
+                            melhor_aposta = df_elegiveis.loc[df_elegiveis['Kelly_Score'].idxmax()]
+                        else:
+                            # Fallback: Se todas as de valor forem menores do que a odd mínima, sugerimos a com melhor pontuação Kelly
+                            melhor_aposta = df_scan_valor.loc[df_scan_valor['Kelly_Score'].idxmax()]
+                            st.info(f"Nota: Nenhuma odd ultrapassou a odd mínima de {odd_minima_rec:.2f}. Abaixo encontras a melhor opção de segurança.")
                         
-                        st.success(f"🎯 O modelo detetou {len(df_scan_valor)} apostas com valor acima de +{limite_ev:.1%}!")
+                        sugestao_banca = np.clip(float(melhor_aposta['Kelly_Score'] * 10.0), 0.5, 3.5)
                         
                         st.markdown("---")
                         st.markdown("### 🏆 Aposta Recomendada (Melhor Risco/Benefício)")
-                        st.info(
+                        st.success(
                             f"**Mercado:** {melhor_aposta['Mercado']}\n\n"
                             f"**Odd Oferecida:** {melhor_aposta['Odd']:.2f} | "
                             f"**Probabilidade Simulada:** {melhor_aposta['Prob']:.1%} | "
                             f"**Valor Esperado (EV):** +{melhor_aposta['EV']:.1%}\n\n"
-                            f"⚖️ **Gestão de Risco Recomendada:** Sugerimos investir **{sugestao_banca:.1%}** da tua banca nesta entrada. "
-                            f"(Cálculo otimizado pelo Critério de Kelly Fracionário para maximização de capital)."
+                            f"⚖️ **Banca Sugerida:** **{sugestao_banca:.1%}** (Cálculo de Kelly para risco controlado)."
                         )
                         st.markdown("---")
-                        
-                        df_visual = df_scan_valor.sort_values(by="Kelly_Score", ascending=False).copy()
-                        df_visual['EV'] = df_visual['EV'].apply(lambda x: f"+{x:.2%}")
-                        df_visual['Odd Justa'] = df_visual['Prob'].apply(lambda x: f"{1/x:.2f}" if x > 0 else "N/A")
-                        df_visual['Prob'] = df_visual['Prob'].apply(lambda x: f"{x:.2%}")
-                        df_visual['Odd'] = df_visual['Odd'].apply(lambda x: f"{x:.2f}")
-                        
-                        st.markdown("#### Todas as Apostas de Valor Encontradas")
-                        st.dataframe(df_visual[['Mercado', 'Odd', 'Odd Justa', 'Prob', 'EV']], use_container_width=True)
                     else:
-                        st.warning(f"❌ Nenhuma linha neste jogo oferece valor suficiente acima do limite de +{limite_ev:.1%}.")
-                        st.markdown("### As melhores opções avaliadas (Mesmo abaixo do limite):")
+                        st.error(f"❌ Nenhuma linha neste jogo oferece rentabilidade a longo prazo (EV acima de +{limite_ev:.1%}). A aposta recomendada é **NÃO APOSTAR**.")
                         
-                        df_fallback = df_scan.head(5).copy()
-                        df_fallback['EV'] = df_fallback['EV'].apply(lambda x: f"{x:.2%}")
-                        df_fallback['Prob'] = df_fallback['Prob'].apply(lambda x: f"{x:.2%}")
-                        df_fallback['Odd'] = df_fallback['Odd'].apply(lambda x: f"{x:.2f}")
-                        st.dataframe(df_fallback[['Mercado', 'Odd', 'Prob', 'EV']])
+                    # Mostrar TODAS as apostas lidas (O bom e o mau)
+                    st.markdown("#### 📋 Auditoria Completa ao Mercado")
+                    st.markdown("Avaliação de todas as linhas e odds extraídas do teu texto:")
+                    
+                    df_visual_all = df_scan.copy()
+                    df_visual_all['EV'] = df_visual_all['EV'].apply(lambda x: f"{'+' if x>0 else ''}{x:.2%}")
+                    df_visual_all['Odd Justa'] = df_visual_all['Prob'].apply(lambda x: f"{1/x:.2f}" if x > 0 else "N/A")
+                    df_visual_all['Prob'] = df_visual_all['Prob'].apply(lambda x: f"{x:.2%}")
+                    df_visual_all['Odd'] = df_visual_all['Odd'].apply(lambda x: f"{x:.2f}")
+                    
+                    st.dataframe(df_visual_all[['Status', 'Mercado', 'Odd', 'Odd Justa', 'Prob', 'EV']], use_container_width=True)
                 else:
-                    st.error("Não foi possível identificar mercados válidos no texto colado. Certifica-te de que o texto segue a formatação padrão da casa de apostas.")
+                    st.error("Não foi possível identificar mercados válidos. Verifica se o texto copiado tem o formato correto.")
