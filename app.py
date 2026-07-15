@@ -29,26 +29,32 @@ def get_elo(nome_jogador, superficie):
     return float(match[col].values[0])
 
 def simulate_match(elo_p1, elo_p2, sets_to_win):
-    # A fórmula Logística clássica (padrão Elo)
+    # 1. Conversão de Elo para Probabilidade (Logistic Curve)
     diff = (elo_p1 - elo_p2) / 400
-    prob_p1 = 1 / (1 + 10**(-diff))
+    prob_p1_base = 1 / (1 + 10**(-diff))
     
-    # ADICIONAMOS RUÍDO (Variância): 
-    # O ténis não é 100% determinístico. 
-    # Adicionamos uma pequena margem aleatória para simular o "dia mau" ou "dia bom"
-    prob_p1 = prob_p1 * 0.9 + np.random.normal(0.05, 0.05) 
-    prob_p1 = np.clip(prob_p1, 0.1, 0.9) # Limites para não ser absurdo
+    # 2. CALIBRAÇÃO DE REALISMO (O segredo do mercado)
+    # Em vez de 100% de precisão no Elo, introduzimos a 'Incerteza do Jogador'
+    # O ténis tem uma volatilidade alta; um favorito nunca ganha mais de 85-90% das vezes.
+    ruido = np.random.normal(0, 0.08)  # Desvio padrão de 8% nos pontos
+    prob_p1 = np.clip(prob_p1_base + ruido, 0.05, 0.95)
     
     p1_sets, p2_sets = 0, 0
     total_g, diff_g = 0, 0
     
     while p1_sets < sets_to_win and p2_sets < sets_to_win:
+        # Simulação de cada SET
         p1_g, p2_g = 0, 0
         while (p1_g < 6 and p2_g < 6) or abs(p1_g - p2_g) < 2:
-            # Simulação de Game: A prob_p1 aqui é a chance de ganhar o game
-            if np.random.random() < prob_p1: p1_g += 1
-            else: p2_g += 1
+            # Probabilidade de ganhar um game no set
+            # A vantagem do serviço é importante: ~55-60% para o servidor
+            prob_game = prob_p1 + (0.05 if (p1_g + p2_g) % 2 == 0 else -0.05)
+            if np.random.random() < prob_game:
+                p1_g += 1
+            else:
+                p2_g += 1
             if p1_g == 7 or p2_g == 7: break
+            
         total_g += (p1_g + p2_g)
         diff_g += (p1_g - p2_g)
         if p1_g > p2_g: p1_sets += 1
