@@ -4,11 +4,11 @@ import numpy as np
 import zipfile
 import os
 
-# Configuração da página
+# Configuração
 st.set_page_config(page_title="QuantBet Pro", layout="wide")
-st.title("🎾 QuantBet Pro: Motor de Simulação Avançado")
+st.title("🎾 QuantBet Pro: Analisador Direto")
 
-# --- 1. CARREGAMENTO DE DADOS ---
+# --- 1. CARREGAMENTO ---
 @st.cache_data
 def load_data():
     with zipfile.ZipFile("dados_resumidos.zip", 'r') as z:
@@ -16,45 +16,33 @@ def load_data():
 
 @st.cache_data
 def load_elos():
-    if os.path.exists("PlayerElo.csv"):
-        return pd.read_csv("PlayerElo.csv")
-    return pd.DataFrame(columns=['Player', 'Elo', 'hElo', 'cElo', 'gElo'])
+    return pd.read_csv("PlayerElo.csv") if os.path.exists("PlayerElo.csv") else pd.DataFrame(columns=['Player', 'Elo', 'hElo', 'cElo', 'gElo'])
 
 df = load_data()
 df_elos = load_elos()
 
-# --- 2. FUNÇÕES DE CÁLCULO ---
+# --- 2. FUNÇÕES ---
 def normalize_name(name):
-    """Transforma 'De Jong, Jesper' ou 'Jesper De Jong' em 'jesper de jong'"""
     if pd.isna(name): return ""
-    name = str(name).lower().strip()
-    if ',' in name:
-        parts = name.split(',')
-        name = f"{parts[1].strip()} {parts[0].strip()}"
-    return name
+    return str(name).lower().strip()
 
 def get_elo(nome_jogador, superficie):
     if not nome_jogador: return 1500
-    
     nome_alvo = normalize_name(nome_jogador)
     
-    # Cria uma cópia temporária normalizada para busca
-    df_elos['temp_name'] = df_elos['Player'].apply(normalize_name)
+    # Busca com normalização
+    mask = df_elos['Player'].apply(normalize_name) == nome_alvo
+    match = df_elos[mask]
     
-    row = df_elos[df_elos['temp_name'] == nome_alvo]
-    
-    if row.empty: return 1500
-    
+    if match.empty: return 1500
     col = {'Clay': 'cElo', 'Grass': 'gElo', 'Hard': 'hElo'}.get(superficie, 'Elo')
-    return int(row[col].values[0])
+    return int(match[col].values[0])
 
 def monte_carlo_simulation(elo_p1, elo_p2, sets_to_win, n_simulations=10000):
     prob_p1 = 1 / (1 + 10**((elo_p2 - elo_p1) / 400))
-    total_jogos_lista = []
-    
+    total_jogos = []
     for _ in range(n_simulations):
-        p1_sets, p2_sets = 0, 0
-        total_g = 0
+        p1_sets, p2_sets, total_g = 0, 0, 0
         while p1_sets < sets_to_win and p2_sets < sets_to_win:
             p1_g, p2_g = 0, 0
             while (p1_g < 6 and p2_g < 6) or abs(p1_g - p2_g) < 2:
@@ -64,33 +52,22 @@ def monte_carlo_simulation(elo_p1, elo_p2, sets_to_win, n_simulations=10000):
             total_g += (p1_g + p2_g)
             if p1_g > p2_g: p1_sets += 1
             else: p2_sets += 1
-        total_jogos_lista.append(total_g)
-    return np.array(total_jogos_lista)
+        total_jogos.append(total_g)
+    return np.array(total_jogos)
 
 # --- 3. INTERFACE ---
-st.sidebar.header("Filtros")
-
-# Filtro Superfície
-superficies = sorted([s for s in df['surface'].dropna().unique()])
+superficies = sorted(df['surface'].dropna().unique())
 superficie = st.sidebar.selectbox("Superfície", superficies)
 
-# Filtro Torneio (CONDICIONAL - Segurança contra KeyError)
-if 'tournament' in df.columns:
-    torneios_disponiveis = sorted(df[df['surface'] == superficie]['tournament'].unique())
-    torneio_escolhido = st.sidebar.multiselect("Torneio", torneios_disponiveis, default=torneios_disponiveis[:1] if torneios_disponiveis else [])
-    df_filtrado = df[(df['surface'] == superficie) & (df['tournament'].isin(torneio_escolhido))]
-else:
-    df_filtrado = df[df['surface'] == superficie]
-    st.sidebar.info("Nota: Filtro de torneio não disponível.")
-
-# Seleção Jogadores
+# Filtro apenas por superfície (sem torneios)
+df_filtrado = df[df['surface'] == superficie]
 jogadores = sorted(df_filtrado['player'].unique())
+
 c1, c2 = st.columns(2)
 nome_p1 = c1.selectbox("Favorito", jogadores, key="p1")
 nome_p2 = c2.selectbox("Adversário", jogadores, key="p2")
 
-# Seleção Formato
-sets_input = st.sidebar.radio("Formato do Encontro", [3, 5])
+sets_input = st.sidebar.radio("Formato", [3, 5])
 
 # Mostrar Elos
 elo1 = get_elo(nome_p1, superficie)
@@ -98,20 +75,10 @@ elo2 = get_elo(nome_p2, superficie)
 c1.metric(f"Elo {nome_p1}", elo1)
 c2.metric(f"Elo {nome_p2}", elo2)
 
-st.divider()
-
-# Simulação
-if st.button("Executar Simulação de Monte Carlo"):
+if st.button("Simular"):
     if nome_p1 == nome_p2:
-        st.error("Por favor, seleciona dois jogadores diferentes.")
+        st.error("Escolhe jogadores diferentes.")
     else:
         totais = monte_carlo_simulation(elo1, elo2, sets_to_win=(sets_input//2 + 1))
-        
-        st.subheader("Resultados (10.000 cenários)")
-        linha = st.number_input("Linha de Jogos", value=21.5 if sets_input == 3 else 35.5)
-        
-        prob_over = np.mean(totais > linha)
-        st.metric("Probabilidade Over", f"{prob_over:.1%}")
         st.metric("Média de Jogos Previstos", f"{np.mean(totais):.1f}")
-        # Coloca isto logo após carregares os dados
-
+        st.metric("Probabilidade Over 21.5", f"{np.mean(totais > 21.5):.1%}")
