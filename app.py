@@ -76,3 +76,29 @@ with m2:
         st.info("O mercado está justo.")
 
 st.sidebar.info("QuantBet Pro: Analisando performance real de serviço.")
+def calcular_elo_historico(df_matches):
+    # Dicionário para guardar o Elo atual de cada jogador
+    elos = {}
+    k_factor = 32
+    
+    # Ordenar por data para processar os jogos cronologicamente
+    df_matches = df_matches.sort_values('Date')
+    
+    for index, row in df_matches.iterrows():
+        p1, p2 = row['Player 1'], row['Player 2']
+        # Elo inicial 1500
+        elo1 = elos.get(p1, 1500)
+        elo2 = elos.get(p2, 1500)
+        
+        # Probabilidade esperada
+        e1 = 1 / (1 + 10**((elo2 - elo1) / 400))
+        
+        # Resultado (1 se Player 1 venceu, 0 caso contrário)
+        # Nota: Precisas de uma coluna que indique o vencedor (ex: 'Winner')
+        resultado = 1 if row['Winner'] == p1 else 0
+        
+        # Atualização
+        elos[p1] = elo1 + k_factor * (resultado - e1)
+        elos[p2] = elo2 + k_factor * ((1 - resultado) - (1 - e1))
+        
+    return elos
