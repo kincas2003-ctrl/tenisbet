@@ -120,3 +120,11 @@ if st.button("Executar Simulação de Monte Carlo"):
         prob_over = np.mean(totais > linha)
         st.metric("Probabilidade Over", f"{prob_over:.1%}")
         st.metric("Média de Jogos Previstos", f"{np.mean(totais):.1f}")
+        # Verificação de Debug (Coloca isto logo após o load_data())
+df = load_data()
+
+st.sidebar.write(f"Colunas detetadas: {df.columns.tolist()}") # Isto vai mostrar-te o que a app está a ver
+
+if 'tournament' not in df.columns:
+    st.error("ERRO: A coluna 'tournament' não existe no ficheiro carregado!")
+    st.stop() # Para a execução aqui
