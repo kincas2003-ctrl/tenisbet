@@ -1,38 +1,38 @@
 import streamlit as st
-st.title("QuantBet: Calculadora ATP")
-odd = st.number_input("Odd do Favorito", min_value=1.0)
-prob = st.slider("Probabilidade Estimada", 0.0, 1.0, 0.70)
-banca = st.number_input("Banca (€)", value=1000.0)
-if st.button("Calcular Veredito"):
-    edge = (prob * odd) - 1
-    if edge > 0:
-        st.success(f"Aposta com Valor! Edge: {edge*100:.2f}%")
-    else:
-        st.error("Sem valor estatístico.")
-import streamlit as st
 
-st.title("QuantBet Pro: Analisador Multi-Mercado")
+st.set_page_config(page_title="QuantBet Pro", layout="wide")
+st.title("🎾 QuantBet Pro: Analisador de Apostas ATP")
 
-# 1. Seletor de Mercado
-mercado = st.selectbox("Escolhe o Mercado", 
-                       ["Vencedor (Match Winner)", "Handicap de Jogos", "Total de Sets"])
+# Sidebar para escolha de mercado
+mercado = st.sidebar.selectbox("Escolhe o Mercado", ["Vencedor (Match Winner)", "Handicap de Jogos"])
 
-# 2. Inputs variáveis
-odd = st.number_input("Odd do mercado", min_value=1.01, value=1.45)
-prob = st.slider("Probabilidade do teu modelo", 0.0, 1.0, 0.70)
+st.subheader(f"Análise de: {mercado}")
 
-# 3. Lógica de cálculo específica
-if st.button("Calcular Veredito"):
-    edge = (prob * odd) - 1
+if mercado == "Vencedor (Match Winner)":
+    odd = st.number_input("Odd do Favorito", min_value=1.01, value=1.45)
+    prob = st.slider("Probabilidade do Modelo (0-1)", 0.0, 1.0, 0.74)
+    banca = st.number_input("Tamanho da Banca (€)", value=1000.0)
     
-    st.subheader(f"Análise para: {mercado}")
-    
-    if edge > 0.05:
-        st.success(f"VALOR DETETADO! Edge: {edge*100:.2f}%")
-        st.write(">> Recomendação: Aposta com unidade padrão.")
-    elif edge > 0:
-        st.warning(f"Margem mínima. Edge: {edge*100:.2f}%")
-        st.write(">> Recomendação: Aposta reduzida.")
-    else:
-        st.error(f"Sem valor. Edge: {edge*100:.2f}%")
+    if st.button("Calcular Aposta"):
+        edge = (prob * odd) - 1
+        # Kelly Fracionado (0.25)
+        kelly = ((odd - 1) * prob - (1 - prob)) / (odd - 1)
+        stake = banca * (max(0, kelly) * 0.25)
         
+        if edge > 0:
+            st.success(f"VALOR DETETADO! Edge: {edge*100:.2f}%")
+            st.metric("Stake Sugerida", f"€{stake:.2f}")
+        else:
+            st.error("Sem valor estatístico.")
+
+elif mercado == "Handicap de Jogos":
+    handicap_casa = st.number_input("Handicap da Casa (ex: -2.5)", value=-2.5)
+    projecao = st.slider("Projeção do Modelo (Dif. de Jogos)", -6.0, 6.0, 0.0)
+    
+    if st.button("Analisar Handicap"):
+        # Se a projeção for mais favorável que o handicap da casa, há edge
+        diferenca = projecao - abs(handicap_casa)
+        if diferenca > 0:
+            st.success(f"Valor no Handicap! A tua projeção supera a casa em {diferenca:.1f} jogos.")
+        else:
+            st.info("O mercado está eficiente. Sem valor claro no Handicap.")
