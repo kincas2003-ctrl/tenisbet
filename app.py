@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import zipfile
 import os
-import joblib  
+import joblib  # Para carregar o modelo de Machine Learning (XGBoost/LightGBM)
 import re
 
 # Configuração da página
@@ -130,16 +130,14 @@ def simulate_match_ml(stats_p1, stats_p2, sets_to_win, ml_model, circuito):
         
     return total_g, diff_g, p1_sets, p2_sets
 
-# --- 5. PARSER DE TEXTO BRUTO DAS ODDS ---
-# --- 5. PARSER DE TEXTO BRUTO DAS ODDS (REGEX AVANÇADO) ---
-# --- 5. PARSER DE TEXTO BRUTO DAS ODDS (REGEX AVANÇADO) ---
+# --- 5. PARSER DE TEXTO BRUTO DAS ODDS (MÉTODO ULTRA-ROBUSTO) ---
 def parse_bookmaker_text(text):
-    """Lê o texto bruto de qualquer casa de apostas e extrai as linhas e odds de forma flexível."""
+    """Lê o texto bruto de qualquer casa de apostas e extrai as odds de forma imune a erros."""
     markets = {
         'match_winner': {},
         'total_games': {}, 
         'game_handicap': {},
-        'total_sets': {}, # NOVO: Dicionário para guardar as linhas de Sets
+        'total_sets': {},
         'p1_set': None,
         'p2_set': None
     }
@@ -152,11 +150,36 @@ def parse_bookmaker_text(text):
         
         line_lower = line.lower()
         
-        # --- 1. DETEÇÃO DE CABEÇALHOS FORTALECIDA ---
-        if ":" not in line and "—" not in line and " - " not in line:
-            if "set 1" in line_lower or "set 2" in line_lower or "odd/even" in line_lower or ("player" in line_lower and "total games" in line_lower):
-                current_category = "Ignored"
-            elif line_lower in ["match winner", "winner", "vencedor"]:
+        # 1. IDENTIFICAR SE É UMA LINHA DE ODD OU CABEÇALHO
+        # Procuramos o último separador para testar se termina com um número (odd)
+        idx_em = line.rfind("—")
+        idx_col = line.rfind(":")
+        idx_hyp = line.rfind(" - ")
+        
+        last_sep = None
+        last_idx = -1
+        for sep, idx in [("—", idx_em), (":", idx_col), (" - ", idx_hyp)]:
+            if idx > last_idx:
+                last_idx = idx
+                last_sep = sep
+                
+        is_odd_line = False
+        key = ""
+        odd = 0.0
+        
+        if last_idx != -1:
+            key_part = line[:last_idx].strip()
+            odd_part = line[last_idx + len(last_sep):].strip()
+            try:
+                odd = float(odd_part)
+                key = key_part
+                is_odd_line = True
+            except ValueError:
+                pass
+                
+        # 2. SE FOR UM CABEÇALHO (Muda de categoria ou ignora)
+        if not is_odd_line:
+            if line_lower in ["match winner", "winner", "vencedor"]:
                 current_category = "match_winner"
             elif line_lower in ["total games", "total de jogos"]:
                 current_category = "total_games"
@@ -169,43 +192,33 @@ def parse_bookmaker_text(text):
             elif "player 2 to win at least one set" in line_lower:
                 current_category = "p2_set"
             else:
+                # Qualquer outra categoria desconhecida (ex: Set 1, Correct Score) é ignorada
                 current_category = "Ignored"
             continue
             
         if current_category == "Ignored":
             continue
             
-        # --- 2. EXTRAÇÃO DE ODDS ---
-        line_clean = line.replace(" — ", ":").replace(" - ", ":")
-        parts = line_clean.split(":")
-        if len(parts) < 2: continue
-        
-        key = parts[0].strip().lower()
-        try:
-            odd = float(parts[1].strip())
-        except ValueError:
-            continue
-
-        # --- 3. ALOCAÇÃO INTELIGENTE ---
+        # 3. ALOCAR ODDS DE FORMA SEGURA
+        key_lower = key.lower()
         if current_category == "match_winner":
-            if key in ["player 1", "1"]: markets['match_winner']['P1'] = odd
-            elif key in ["player 2", "2"]: markets['match_winner']['P2'] = odd
+            if key_lower in ["player 1", "1"]: markets['match_winner']['P1'] = odd
+            elif key_lower in ["player 2", "2"]: markets['match_winner']['P2'] = odd
                 
         elif current_category in ["total_games", "total_sets"]:
-            m = re.match(r"(over|under)\s+(\d+\.\d+)", key)
+            m = re.match(r"(over|under)\s+(\d+\.\d+)", key_lower)
             if m:
                 ou = m.group(1).capitalize()
                 line_val = float(m.group(2))
                 
-                # SALVAGUARDA MATEMÁTICA: Linhas pequenas são obrigatoriamente Sets
+                # Salvaguarda: Se a linha for menor que 6.0, são sets!
                 target_dict = 'total_sets' if line_val < 6.0 else 'total_games'
-                
                 if line_val not in markets[target_dict]: 
                     markets[target_dict][line_val] = {}
                 markets[target_dict][line_val][ou] = odd
                 
         elif current_category == "game_handicap":
-            m = re.match(r"(?:player )?(1|2)\s*\(([+-]?\d+\.\d+)\)", key)
+            m = re.match(r"(?:player )?(1|2)\s*\(([+-]?\d+\.\d+)\)", key_lower)
             if m:
                 player_num = m.group(1)
                 hcp_val = float(m.group(2))
@@ -213,10 +226,10 @@ def parse_bookmaker_text(text):
                     markets['game_handicap'][hcp_val] = odd
                     
         elif current_category == "p1_set":
-            if key == "yes": markets['p1_set'] = odd
+            if key_lower == "yes": markets['p1_set'] = odd
                 
         elif current_category == "p2_set":
-            if key == "yes": markets['p2_set'] = odd
+            if key_lower == "yes": markets['p2_set'] = odd
             
     return markets
 
@@ -382,7 +395,7 @@ with tab3:
     st.header("Auto-Scanner Inteligente (Copiar & Colar)")
     st.markdown("Seleciona os jogadores do texto colado para o modelo saber os respetivos Elos.")
     
-    # NOVAS SELEÇÕES EXCLUSIVAS PARA A ABA 3
+    # Seleções de jogadores
     c_scan1, c_scan2 = st.columns(2)
     scan_p1 = c_scan1.selectbox("Favorito (Player 1 no texto)", jogadores, key="tab3_p1")
     scan_p2 = c_scan2.selectbox("Underdog (Player 2 no texto)", jogadores, key="tab3_p2")
@@ -415,6 +428,7 @@ with tab3:
                 
                 lista_ev = []
                 
+                # Vitória Seca
                 if 'P1' in mercados_extraidos['match_winner']:
                     odd = mercados_extraidos['match_winner']['P1']
                     lista_ev.append({"Mercado": f"Vitória {scan_p1}", "Prob": prob_p1_win, "Odd": odd, "EV": (odd * prob_p1_win) - 1})
@@ -422,6 +436,7 @@ with tab3:
                     odd = mercados_extraidos['match_winner']['P2']
                     lista_ev.append({"Mercado": f"Vitória {scan_p2}", "Prob": prob_p2_win, "Odd": odd, "EV": (odd * prob_p2_win) - 1})
                 
+                # Ganhar Set (+1.5 Set hcp)
                 if mercados_extraidos['p1_set']:
                     prob = np.mean(p1_sets_ganhos >= 1)
                     lista_ev.append({"Mercado": f"{scan_p1} ganha +1 Set", "Prob": prob, "Odd": mercados_extraidos['p1_set'], "EV": (mercados_extraidos['p1_set'] * prob) - 1})
@@ -429,6 +444,7 @@ with tab3:
                     prob = np.mean(p2_sets_ganhos >= 1)
                     lista_ev.append({"Mercado": f"{scan_p2} ganha +1 Set", "Prob": prob, "Odd": mercados_extraidos['p2_set'], "EV": (mercados_extraidos['p2_set'] * prob) - 1})
                     
+                # Over/Under de Games (Jogos)
                 for linha_g, odds_ou in mercados_extraidos['total_games'].items():
                     if 'Over' in odds_ou:
                         prob = np.mean(totais > linha_g)
@@ -436,7 +452,8 @@ with tab3:
                     if 'Under' in odds_ou:
                         prob = np.mean(totais < linha_g)
                         lista_ev.append({"Mercado": f"Under {linha_g} Jogos", "Prob": prob, "Odd": odds_ou['Under'], "EV": (odds_ou['Under'] * prob) - 1})
-                        # === NOVO: Avaliar Total de Sets (Ex: Over 2.5) ===
+                
+                # Over/Under de Sets (Ex: Over 2.5 Sets)
                 total_sets_jogados = p1_sets_ganhos + p2_sets_ganhos
                 for linha_s, odds_ou in mercados_extraidos['total_sets'].items():
                     if 'Over' in odds_ou:
@@ -446,37 +463,41 @@ with tab3:
                         prob = np.mean(total_sets_jogados < linha_s)
                         lista_ev.append({"Mercado": f"Under {linha_s} Sets", "Prob": prob, "Odd": odds_ou['Under'], "EV": (odds_ou['Under'] * prob) - 1})
                         
+                # Handicaps de Games do Jogador 1 (Favorito)
                 for hcp_linha, odd in mercados_extraidos['game_handicap'].items():
                     prob = np.mean(diffs > abs(hcp_linha)) if hcp_linha < 0 else np.mean(diffs < -hcp_linha)
                     lista_ev.append({"Mercado": f"Handicap {scan_p1} ({hcp_linha})", "Prob": prob, "Odd": odd, "EV": (odd * prob) - 1})
                     
-               # Filtragem e Apresentação dos Resultados
+                # APRESENTAÇÃO DOS RESULTADOS E RECOMENDAÇÃO INTELIGENTE
                 if lista_ev:
                     df_scan = pd.DataFrame(lista_ev).sort_values(by="EV", ascending=False)
                     df_scan_valor = df_scan[df_scan['EV'] >= limite_ev].copy()
                     
                     if not df_scan_valor.empty:
-                        # === CÁLCULO DE RISCO/BENEFÍCIO (Critério de Kelly) ===
-                        # A Fórmula de Kelly divide o EV pelo prémio líquido (Odd - 1)
-                        # Identifica a aposta que faz crescer a banca mais rápido com menor risco de quebra
+                        # Cálculo de Risco/Benefício com base no Critério de Kelly
                         df_scan_valor['Kelly_Score'] = df_scan_valor['EV'] / (df_scan_valor['Odd'] - 1)
+                        
+                        # A melhor aposta é a que maximiza o retorno com menor volatilidade de banca
                         melhor_aposta = df_scan_valor.loc[df_scan_valor['Kelly_Score'].idxmax()]
+                        
+                        # Sugerimos usar 10% do valor de Kelly (Kelly Fracionário) para gestão de banca conservadora
+                        sugestao_banca = float(melhor_aposta['Kelly_Score'] * 10.0) # Converter para percentagem recomendada
+                        sugestao_banca = np.clip(sugestao_banca, 0.5, 3.5) # Limites rígidos de segurança de gestão profissional (0.5% a 3.5%)
                         
                         st.success(f"🎯 O modelo detetou {len(df_scan_valor)} apostas com valor acima de +{limite_ev:.1%}!")
                         
-                        # Destaque da Aposta Recomendada
                         st.markdown("---")
                         st.markdown("### 🏆 Aposta Recomendada (Melhor Risco/Benefício)")
                         st.info(
                             f"**Mercado:** {melhor_aposta['Mercado']}\n\n"
-                            f"**Odd Casa:** {melhor_aposta['Odd']:.2f} | "
-                            f"**Probabilidade Real:** {melhor_aposta['Prob']:.1%} | "
+                            f"**Odd Oferecida:** {melhor_aposta['Odd']:.2f} | "
+                            f"**Probabilidade Simulada:** {melhor_aposta['Prob']:.1%} | "
                             f"**Valor Esperado (EV):** +{melhor_aposta['EV']:.1%}\n\n"
-                            f"*(Matematicamente a aposta mais segura e lucrativa para o teu capital neste encontro)*"
+                            f"⚖️ **Gestão de Risco Recomendada:** Sugerimos investir **{sugestao_banca:.1%}** da tua banca nesta entrada. "
+                            f"(Cálculo otimizado pelo Critério de Kelly Fracionário para maximização de capital)."
                         )
                         st.markdown("---")
                         
-                        # Tabela Geral Ordenada pelo Índice de Segurança
                         df_visual = df_scan_valor.sort_values(by="Kelly_Score", ascending=False).copy()
                         df_visual['EV'] = df_visual['EV'].apply(lambda x: f"+{x:.2%}")
                         df_visual['Odd Justa'] = df_visual['Prob'].apply(lambda x: f"{1/x:.2f}" if x > 0 else "N/A")
@@ -495,4 +516,4 @@ with tab3:
                         df_fallback['Odd'] = df_fallback['Odd'].apply(lambda x: f"{x:.2f}")
                         st.dataframe(df_fallback[['Mercado', 'Odd', 'Prob', 'EV']])
                 else:
-                    st.error("Não foi possível identificar mercados válidos. Certifica-te de que o texto segue a formatação padrão da casa de apostas.")
+                    st.error("Não foi possível identificar mercados válidos no texto colado. Certifica-te de que o texto segue a formatação padrão da casa de apostas.")
