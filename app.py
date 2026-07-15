@@ -85,3 +85,80 @@ with m2:
         st.write(f"Probabilidade de cumprir o Handicap: **{prob_handicap:.2%}**")
         if prob_handicap > 0:
             st.write(f"Odd Justa sugerida: **{1/prob_handicap:.2f}**")
+            import streamlit as st
+import pandas as pd
+import numpy as np
+import zipfile
+import os
+
+# --- FUNÇÕES DE CARGA ---
+@st.cache_data
+def load_data():
+    with zipfile.ZipFile("dados_resumidos.zip", 'r') as z:
+        return pd.read_csv(z.open("dados_resumidos.csv"))
+
+@st.cache_data
+def load_elos():
+    return pd.read_csv("elos_jogadores.csv") if os.path.exists("elos_jogadores.csv") else pd.DataFrame(columns=['player', 'elo'])
+
+df = load_data()
+df_elos = load_elos()
+
+# --- LÓGICA DE SIMULAÇÃO ---
+def monte_carlo_simulation(elo_p1, elo_p2, n_simulations=10000):
+    prob_p1 = 1 / (1 + 10**((elo_p2 - elo_p1) / 400))
+    diff_resultados = []
+    total_jogos = []
+    
+    for _ in range(n_simulations):
+        p1_g, p2_g = 0, 0
+        while (p1_g < 6 and p2_g < 6) or abs(p1_g - p2_g) < 2:
+            if np.random.random() < prob_p1: p1_g += 1
+            else: p2_g += 1
+            if p1_g == 7 or p2_g == 7: break
+        diff_resultados.append(p1_g - p2_g)
+        total_jogos.append(p1_g + p2_g)
+        
+    return np.array(diff_resultados), np.array(total_jogos)
+
+# --- INTERFACE ---
+st.title("🎾 QuantBet Pro: Analisador Avançado")
+
+# Filtro de Superfície (Todas as opções)
+superficies = sorted([s for s in df['surface'].unique() if pd.notna(s)])
+superficie_escolhida = st.sidebar.selectbox("Superfície", ["Todas"] + superficies)
+
+if superficie_escolhida != "Todas":
+    df_filtrado = df[df['surface'] == superficie_escolhida]
+else:
+    df_filtrado = df
+
+# Seleção Jogadores
+jogadores = sorted(df_filtrado['player'].unique())
+c1, c2 = st.columns(2)
+nome_p1 = c1.selectbox("Favorito", jogadores, key="p1")
+nome_p2 = c2.selectbox("Adversário", jogadores, key="p2")
+
+# Cálculo e Botão
+if st.button("Executar Simulação Completa"):
+    elo1 = df_elos[df_elos['player'] == nome_p1]['elo'].values[0] if nome_p1 in df_elos['player'].values else 1500
+    elo2 = df_elos[df_elos['player'] == nome_p2]['elo'].values[0] if nome_p2 in df_elos['player'].values else 1500
+    
+    diffs, totais = monte_carlo_simulation(elo1, elo2)
+    
+    # Resultados
+    st.subheader("Resultados da Simulação")
+    col_a, col_b = st.columns(2)
+    
+    with col_a:
+        st.markdown("**Mercado Handicap**")
+        h = st.number_input("Handicap (-2.5)", value=-2.5)
+        prob_h = np.mean(diffs > abs(h)) if h < 0 else np.mean(diffs < -h)
+        st.write(f"Prob: {prob_h:.2%}")
+        
+    with col_b:
+        st.markdown("**Mercado Over/Under**")
+        total_linha = st.number_input("Linha de Jogos (ex: 21.5)", value=21.5)
+        prob_over = np.mean(totais > total_linha)
+        st.write(f"Probabilidade Over: {prob_over:.2%}")
+        st.write(f"Probabilidade Under: {1-prob_over:.2%}")
