@@ -5,6 +5,7 @@ import zipfile
 import os
 import joblib  # Para carregar o modelo de Machine Learning (XGBoost/LightGBM)
 
+# Configuração da página
 st.set_page_config(page_title="QuantBet OS", layout="wide")
 st.title("🎾 QuantBet OS: Sistema Quantitativo ATP & WTA")
 
@@ -22,7 +23,6 @@ def load_data():
 
 @st.cache_data
 def load_elos(circuito):
-    # Carrega o ficheiro de Elo correspondente ao circuito selecionado
     if circuito == "WTA (Feminino)":
         ficheiro = "EloRankP.csv"
     else:
@@ -35,12 +35,15 @@ def load_elos(circuito):
 df = load_data()
 ml_model = load_ml_model()
 
-if ml_model is None:
-    st.warning("⚠️ Modelo XGBoost pré-treinado não encontrado (`modelo_tenis_calibrado.pkl`). A usar motor matemático alternativo.")
-
 # --- 2. INTERFACE E SIDEBAR (ESCOLHA DO CIRCUITO) ---
 st.sidebar.header("1. Configurações da Partida")
 circuito = st.sidebar.radio("Circuito", ["ATP (Masculino)", "WTA (Feminino)"])
+
+# Mostrar o aviso do modelo de forma discreta na barra lateral
+if ml_model is None:
+    st.sidebar.info("🤖 Motor: Elo Matemático (Fallback)")
+else:
+    st.sidebar.success("🤖 Motor: XGBoost Calibrado")
 
 # Carregar os Elos específicos do circuito escolhido
 df_elos = load_elos(circuito)
@@ -74,7 +77,6 @@ def get_player_stats(nome_jogador, superficie):
 
 # --- 4. SIMULAÇÃO MONTE CARLO INTEGRADA COM ML E CIRCUITO ---
 def simulate_match_ml(stats_p1, stats_p2, sets_to_win, ml_model, circuito):
-    # Definir base de Hold % com base no circuito
     if circuito == "WTA (Feminino)":
         base_hold = 0.635  # Média WTA
         limite_inf, limite_sup = 0.35, 0.85
@@ -94,7 +96,6 @@ def simulate_match_ml(stats_p1, stats_p2, sets_to_win, ml_model, circuito):
         elo_diff = stats_p1['elo'] - stats_p2['elo']
         prob_p1_match = 1 / (1 + 10**(-elo_diff / 400))
     
-    # Calibração do deslocamento de vantagem
     game_prob_shift = (prob_p1_match - 0.5) * 0.15
     
     p1_hold_prob = np.clip(base_hold + game_prob_shift, limite_inf, limite_sup)
@@ -124,10 +125,9 @@ def simulate_match_ml(stats_p1, stats_p2, sets_to_win, ml_model, circuito):
         
     return total_g, diff_g, p1_sets, p2_sets
 
-# --- 5. CONTINUAÇÃO DA INTERFACE ---
+# --- 5. INTERFACE DO UTILIZADOR ---
 superficie = st.sidebar.selectbox("Superfície", sorted(df['surface'].dropna().unique()))
 
-# Definir os sets por omissão (Grand Slam WTA é sempre à melhor de 3 sets)
 sets_padrao = [3] if circuito == "WTA (Feminino)" else [3, 5]
 sets_input = st.sidebar.radio("Sets do Encontro", sets_padrao)
 
@@ -145,7 +145,7 @@ stats_p2 = get_player_stats(nome_p2, superficie)
 c1.metric(f"Elo {superficie} {nome_p1}", f"{stats_p1['elo']:.1f}")
 c2.metric(f"Elo {superficie} {nome_p2}", f"{stats_p2['elo']:.1f}")
 
-# --- INPUTS DE ODDS DAS CASAS DE APOSTAS ---
+# --- INPUTS DE ODDS ---
 st.sidebar.header("2. Odds Disponíveis")
 odd_p1_casa = st.sidebar.number_input(f"Odd {nome_p1}", value=1.70, step=0.01)
 odd_p2_casa = st.sidebar.number_input(f"Odd {nome_p2}", value=2.15, step=0.01)
@@ -156,19 +156,16 @@ limite_ev = st.sidebar.slider("Limite de EV Aceitável (%)", min_value=1.0, max_
 
 st.divider()
 
-if # --- 5. SIMULAÇÃO E RESULTADOS (SUBSTITUI DAQUI ATÉ AO FIM DO TEU APP.PY) ---
 if st.button("Executar Sistema Quantitativo"):
     if nome_p1 == nome_p2:
         st.error("Seleciona jogadoras/jogadores diferentes.")
     else:
-        # Executa 5000 simulações
         sims = [simulate_match_ml(stats_p1, stats_p2, (sets_input//2 + 1), ml_model, circuito) for _ in range(5000)]
         totais = np.array([s[0] for s in sims])
         diffs = np.array([s[1] for s in sims])
         p1_sets_ganhos = np.array([s[2] for s in sims])
         p2_sets_ganhos = np.array([s[3] for s in sims])
         
-        # Probabilidades do Modelo
         prob_p1_win = np.mean(p1_sets_ganhos > p2_sets_ganhos)
         prob_p2_win = 1 - prob_p1_win
         
@@ -178,11 +175,10 @@ if st.button("Executar Sistema Quantitativo"):
         h = -2.5
         prob_h = np.mean(diffs > abs(h)) if h < 0 else np.mean(diffs < -h)
         
-        # Probabilidade de vencer pelo menos 1 set (Underdog)
         prob_p2_set = np.mean(p2_sets_ganhos >= 1)
         odd_justa_p2_set = 1 / prob_p2_set if prob_p2_set > 0 else 999.0
         
-        # Cálculos de EV (Valor Esperado)
+        # EV (Expected Value)
         ev_p1 = (odd_p1_casa * prob_p1_win) - 1
         ev_p2 = (odd_p2_casa * prob_p2_win) - 1
         ev_over = (odd_over_casa * prob_over) - 1
@@ -220,7 +216,6 @@ if st.button("Executar Sistema Quantitativo"):
         
         st.write("### Detalhes de Auditoria de Odds")
         
-        # Formatação segura sem encadeamento de parênteses quebrados
         df_formatado = df_resultados.copy()
         df_formatado['EV'] = df_formatado['EV'].apply(lambda x: f"{x:.2%}")
         df_formatado['Odd Casa'] = df_formatado['Odd Casa'].apply(lambda x: f"{x:.2f}")
