@@ -16,7 +16,6 @@ def load_data():
 
 @st.cache_data
 def load_elos():
-    # Carrega o ficheiro PlayerElo.csv que forneceste
     if os.path.exists("PlayerElo.csv"):
         return pd.read_csv("PlayerElo.csv")
     return pd.DataFrame(columns=['Player', 'Elo', 'hElo', 'cElo', 'gElo'])
@@ -26,8 +25,14 @@ df_elos = load_elos()
 
 # --- 2. FUNÇÕES DE CÁLCULO ---
 def get_elo(nome_jogador, superficie):
+    # Proteção: se o seletor estiver vazio, retorna Elo base
+    if not nome_jogador or pd.isna(nome_jogador):
+        return 1500
+    
     row = df_elos[df_elos['Player'].str.lower() == nome_jogador.lower()]
-    if row.empty: return 1500
+    if row.empty: 
+        return 1500
+    
     # Mapeamento dinâmico baseado na superfície
     col = {'Clay': 'cElo', 'Grass': 'gElo', 'Hard': 'hElo'}.get(superficie, 'Elo')
     return int(row[col].values[0])
@@ -51,14 +56,14 @@ def monte_carlo_simulation(elo_p1, elo_p2, sets_to_win, n_simulations=10000):
         total_jogos_lista.append(total_g)
     return np.array(total_jogos_lista)
 
-# --- 3. INTERFACE E FILTROS SEGUROS ---
+# --- 3. INTERFACE ---
 st.sidebar.header("Filtros")
 
 # Filtro Superfície
 superficies = sorted([s for s in df['surface'].dropna().unique()])
 superficie = st.sidebar.selectbox("Superfície", superficies)
 
-# Filtro Torneio (CONDICIONAL - Resolve o KeyError)
+# Filtro Torneio (CONDICIONAL - Segurança contra KeyError)
 if 'tournament' in df.columns:
     torneios_disponiveis = sorted(df[df['surface'] == superficie]['tournament'].unique())
     torneio_escolhido = st.sidebar.multiselect("Torneio", torneios_disponiveis, default=torneios_disponiveis[:1] if torneios_disponiveis else [])
@@ -86,11 +91,14 @@ st.divider()
 
 # Simulação
 if st.button("Executar Simulação de Monte Carlo"):
-    totais = monte_carlo_simulation(elo1, elo2, sets_to_win=(sets_input//2 + 1))
-    
-    st.subheader("Resultados (10.000 cenários)")
-    linha = st.number_input("Linha de Jogos", value=21.5 if sets_input == 3 else 35.5)
-    
-    prob_over = np.mean(totais > linha)
-    st.metric("Probabilidade Over", f"{prob_over:.1%}")
-    st.metric("Média de Jogos Previstos", f"{np.mean(totais):.1f}")
+    if nome_p1 == nome_p2:
+        st.error("Por favor, seleciona dois jogadores diferentes.")
+    else:
+        totais = monte_carlo_simulation(elo1, elo2, sets_to_win=(sets_input//2 + 1))
+        
+        st.subheader("Resultados (10.000 cenários)")
+        linha = st.number_input("Linha de Jogos", value=21.5 if sets_input == 3 else 35.5)
+        
+        prob_over = np.mean(totais > linha)
+        st.metric("Probabilidade Over", f"{prob_over:.1%}")
+        st.metric("Média de Jogos Previstos", f"{np.mean(totais):.1f}")
