@@ -50,3 +50,21 @@ elif mercado == "Handicap de Jogos":
             st.success("Valor no Handicap!")
         else:
             st.info("Sem valor claro.")
+# Adiciona esta função de cálculo ao teu app.py
+def calcular_probabilidade(jogador1, jogador2, df):
+    # Vamos criar um "Score de Força" baseado no serviço (as colunas que temos)
+    # Exemplo: Média de eficácia no T e Wide
+    stats1 = df[df['player'] == jogador1][['deuce_t', 'ad_t', 'deuce_wide', 'ad_wide']].mean().sum()
+    stats2 = df[df['player'] == jogador2][['deuce_t', 'ad_t', 'deuce_wide', 'ad_wide']].mean().sum()
+    
+    # Probabilidade simples: Força do P1 / (Força do P1 + Força do P2)
+    prob_p1 = stats1 / (stats1 + stats2)
+    return prob_p1
+
+# Na tua interface:
+nome_p1 = st.selectbox("Favorito", df['player'].unique())
+nome_p2 = st.selectbox("Adversário", df['player'].unique())
+
+if st.button("Gerar Projeção Automática"):
+    prob = calcular_probabilidade(nome_p1, nome_p2, df)
+    st.write(f"Probabilidade calculada pelo modelo para {nome_p1}: {prob:.2%}")
