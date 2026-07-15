@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import zipfile
 import os
-import joblib  # Para carregar o modelo de Machine Learning (XGBoost/LightGBM)
+import joblib  
 import re
 
 # Configuração da página
@@ -36,25 +36,31 @@ def load_elos(circuito):
 df = load_data()
 ml_model = load_ml_model()
 
-# --- 2. INTERFACE E SIDEBAR (ESCOLHA DO CIRCUITO) ---
+# --- 2. INTERFACE GLOBAL (BARRA LATERAL) ---
 st.sidebar.header("1. Configurações Globais")
 circuito = st.sidebar.radio("Circuito", ["ATP (Masculino)", "WTA (Feminino)"])
 
-# Mostrar o aviso do modelo de forma discreta na barra lateral
 if ml_model is None:
     st.sidebar.info("🤖 Motor: Elo Matemático (Fallback)")
 else:
     st.sidebar.success("🤖 Motor: XGBoost Calibrado")
 
-# Carregar os Elos específicos do circuito escolhido
 df_elos = load_elos(circuito)
 
-# --- 3. ENGENHARIA DE FEATURES "ON-THE-FLY" ---
+superficie = st.sidebar.selectbox("Superfície", sorted(df['surface'].dropna().unique()))
+
+sets_padrao = [3] if circuito == "WTA (Feminino)" else [3, 5]
+sets_input = st.sidebar.radio("Sets do Encontro", sets_padrao)
+
+jogadores = sorted(df_elos['Player'].dropna().unique())
+
+limite_ev = st.sidebar.slider("Limite de EV Aceitável (%)", min_value=1.0, max_value=15.0, value=5.0, step=0.5) / 100
+
+# --- 3. ENGENHARIA DE FEATURES ---
 def get_player_stats(nome_jogador, superficie):
     if not nome_jogador or pd.isna(nome_jogador):
         return {"elo": 1500, "hold_rate": 0.78 if circuito == "ATP (Masculino)" else 0.635, "fatigue": 0}
     
-    # Obter Elo
     nome_norm = str(nome_jogador).lower().strip()
     match_elo = df_elos[df_elos['Player'].str.lower().str.strip() == nome_norm]
     elo = 1500
@@ -62,10 +68,8 @@ def get_player_stats(nome_jogador, superficie):
         col = {'Clay': 'cElo', 'Grass': 'gElo', 'Hard': 'hElo'}.get(superficie, 'Elo')
         elo = float(match_elo[col].values[0])
         
-    # Extrair estatísticas recentes dos dados históricos (Match Charting Project)
     partidas_jogador = df[df['player'].str.lower().str.strip() == nome_norm]
     
-    # Média de Hold % (padrão conforme circuito)
     hold_rate = 0.78 if circuito == "ATP (Masculino)" else 0.635
     if not partidas_jogador.empty and 'hold_percentage' in partidas_jogador.columns:
         hold_rate = partidas_jogador['hold_percentage'].mean()
@@ -76,13 +80,13 @@ def get_player_stats(nome_jogador, superficie):
         
     return {"elo": elo, "hold_rate": hold_rate, "fatigue": fatigue}
 
-# --- 4. SIMULAÇÃO MONTE CARLO INTEGRADA COM ML E CIRCUITO ---
+# --- 4. SIMULAÇÃO MONTE CARLO ---
 def simulate_match_ml(stats_p1, stats_p2, sets_to_win, ml_model, circuito):
     if circuito == "WTA (Feminino)":
-        base_hold = 0.635  # Média WTA
+        base_hold = 0.635  
         limite_inf, limite_sup = 0.35, 0.85
     else:
-        base_hold = 0.780  # Média ATP
+        base_hold = 0.780  
         limite_inf, limite_sup = 0.45, 0.95
 
     if ml_model is not None:
@@ -126,9 +130,8 @@ def simulate_match_ml(stats_p1, stats_p2, sets_to_win, ml_model, circuito):
         
     return total_g, diff_g, p1_sets, p2_sets
 
-# --- 5. PARSER DE TEXTO BRUTO DAS ODDS (REGEX) ---
+# --- 5. PARSER DE TEXTO BRUTO DAS ODDS ---
 def parse_bookmaker_text(text):
-    """Lê o texto bruto da casa de apostas e extrai as linhas e odds de todos os mercados."""
     markets = {
         'match_winner': {},
         'total_games': {}, 
@@ -136,20 +139,17 @@ def parse_bookmaker_text(text):
         'p1_set': None,
         'p2_set': None
     }
-    
     current_category = None
     
     for line in text.split('\n'):
         line = line.strip()
         if not line: continue
         
-        # Detetar categorias principais
         if line in ["Match winner", "Total games", "Game handicap", 
                     "Player 1 to win at least one set?", "Player 2 to win at least one set?"]:
             current_category = line
             continue
             
-        # Ignorar categorias de Set individual ou Ímpar/Par para o EV do jogo completo
         if line.startswith("Set 1") or line.startswith("Set 2") or line == "Odd/Even games":
             current_category = "Ignored"
             continue
@@ -174,7 +174,6 @@ def parse_bookmaker_text(text):
             if m:
                 player, hcp_val, odd = m.groups()
                 hcp_val, odd = float(hcp_val), float(odd)
-                # Guardamos a linha do Handicap de Jogo na ótica do Jogador 1 (Favorito)
                 if player == "Player 1":
                     markets['game_handicap'][hcp_val] = odd
                     
@@ -188,18 +187,7 @@ def parse_bookmaker_text(text):
                 
     return markets
 
-# --- 6. INTERFACE DO UTILIZADOR (ABAS) ---
-superficie = st.sidebar.selectbox("Superfície", sorted(df['surface'].dropna().unique()))
-
-sets_padrao = [3] if circuito == "WTA (Feminino)" else [3, 5]
-sets_input = st.sidebar.radio("Sets do Encontro", sets_padrao)
-
-# Filtra a lista dos jogadores apenas do circuito atualmente ativo
-jogadores = sorted(df_elos['Player'].dropna().unique())
-
-limite_ev = st.sidebar.slider("Limite de EV Aceitável (%)", min_value=1.0, max_value=15.0, value=5.0, step=0.5) / 100
-
-# Construção das 3 Abas de Trabalho
+# --- 6. ABAS DE TRABALHO ---
 tab1, tab2, tab3 = st.tabs(["🔍 Calculadora Manual", "🚀 CSV em Massa", "🤖 Auto-Scanner (Colar Texto)"])
 
 # ==========================================
@@ -208,8 +196,8 @@ tab1, tab2, tab3 = st.tabs(["🔍 Calculadora Manual", "🚀 CSV em Massa", "�
 with tab1:
     st.header("Análise de Partida Única")
     c1, c2 = st.columns(2)
-    nome_p1 = c1.selectbox("Favorito (P1)", jogadores, key="p1")
-    nome_p2 = c2.selectbox("Underdog (P2)", jogadores, key="p2")
+    nome_p1 = c1.selectbox("Favorito (P1)", jogadores, key="tab1_p1")
+    nome_p2 = c2.selectbox("Underdog (P2)", jogadores, key="tab1_p2")
 
     stats_p1 = get_player_stats(nome_p1, superficie)
     stats_p2 = get_player_stats(nome_p2, superficie)
@@ -226,7 +214,7 @@ with tab1:
 
     st.divider()
 
-    if st.button("Executar Sistema Quantitativo"):
+    if st.button("Executar Sistema Quantitativo", key="btn_tab1"):
         if nome_p1 == nome_p2:
             st.error("Seleciona jogadoras/jogadores diferentes.")
         else:
@@ -243,10 +231,8 @@ with tab1:
             
             linha = 21.5 if sets_input == 3 else 35.5
             prob_over = np.mean(totais > linha)
-            
             h = -2.5
             prob_h = np.mean(diffs > abs(h)) if h < 0 else np.mean(diffs < -h)
-            
             prob_p2_set = np.mean(p2_sets_ganhos >= 1)
             odd_justa_p2_set = 1 / prob_p2_set if prob_p2_set > 0 else 999.0
             
@@ -263,7 +249,6 @@ with tab1:
             ]
             
             df_resultados = pd.DataFrame(dados_mercados).sort_values(by="EV", ascending=False)
-            
             st.subheader("📊 Relatório de Oportunidades")
             oportunidades_validas = df_resultados[df_resultados['EV'] >= limite_ev]
             
@@ -279,13 +264,10 @@ with tab1:
             col_sec1.metric("Média de Jogos Previstos", f"{np.mean(totais):.1f}")
             col_sec2.metric(f"Probabilidade {nome_p2} Ganhar +1 Set", f"{prob_p2_set:.1%}", help=f"Odd Justa: {odd_justa_p2_set:.2f}")
             
-            st.write("### Detalhes de Auditoria de Odds")
-            
             df_formatado = df_resultados.copy()
             df_formatado['EV'] = df_formatado['EV'].apply(lambda x: f"{x:.2%}")
             df_formatado['Odd Casa'] = df_formatado['Odd Casa'].apply(lambda x: f"{x:.2f}")
             df_formatado['Prob'] = df_formatado['Prob'].apply(lambda x: f"{x:.2%}")
-            
             st.dataframe(df_formatado)
 
 # ==========================================
@@ -293,31 +275,20 @@ with tab1:
 # ==========================================
 with tab2:
     st.header("Scanner de Valor Múltiplo (Separado por vírgula)")
-    st.markdown("""
-    **Instruções de Colagem:** Copia os dados (por exemplo do Excel) e cola na caixa abaixo. O formato deve ser separado por vírgulas, uma partida por linha:  
-    `Jogador 1, Jogador 2, Odd P1, Odd P2, Linha Over, Odd Over, Linha Hcp, Odd Hcp`
-    
-    *Exemplo:* `Aryna Sabalenka, Iga Swiatek, 1.80, 2.05, 21.5, 1.90, -1.5, 1.85`  
-    `Coco Gauff, Jessica Pegula, 1.55, 2.40, 20.5, 1.85, -2.5, 1.95`
-    """)
+    st.markdown("`Jogador 1, Jogador 2, Odd P1, Odd P2, Linha Over, Odd Over, Linha Hcp, Odd Hcp`")
+    bloco_texto_csv = st.text_area("Cola as Odds CSV aqui:", height=200, key="csv_area")
 
-    bloco_texto = st.text_area("Cola as Odds CSV aqui:", height=200, key="csv_area")
-
-    if st.button("Varrer Mercado (Scan CSV)"):
-        if not bloco_texto.strip():
+    if st.button("Varrer Mercado (Scan CSV)", key="btn_tab2"):
+        if not bloco_texto_csv.strip():
             st.error("Cola alguns dados primeiro.")
         else:
-            linhas = bloco_texto.strip().split('\n')
+            linhas = bloco_texto_csv.strip().split('\n')
             todas_apostas_valor = []
-            
             with st.spinner('A simular todos os encontros...'):
                 for linha_texto in linhas:
                     try:
                         partes = [p.strip() for p in linha_texto.split(',')]
-                        if len(partes) < 8:
-                            st.warning(f"Linha ignorada por formatação incompleta: {linha_texto}")
-                            continue
-                            
+                        if len(partes) < 8: continue
                         j1, j2 = partes[0], partes[1]
                         odd_j1, odd_j2 = float(partes[2]), float(partes[3])
                         linha_ov, odd_ov = float(partes[4]), float(partes[5])
@@ -345,65 +316,61 @@ with tab2:
                             f"Over {linha_ov}": (odd_ov * prob_over) - 1,
                             f"Hcp {j1} ({linha_hcp})": (odd_hcp * prob_hcp) - 1
                         }
-                        
                         for mercado, ev in evs.items():
                             if ev >= limite_ev:
-                                odd_casa = odd_j1 if "Vitória" in mercado and j1 in mercado else \
-                                           odd_j2 if "Vitória" in mercado and j2 in mercado else \
-                                           odd_ov if "Over" in mercado else odd_hcp
                                 prob_mod = prob_p1 if "Vitória" in mercado and j1 in mercado else \
                                            prob_p2 if "Vitória" in mercado and j2 in mercado else \
                                            prob_over if "Over" in mercado else prob_hcp
-                                           
+                                odd_casa = odd_j1 if "Vitória" in mercado and j1 in mercado else \
+                                           odd_j2 if "Vitória" in mercado and j2 in mercado else \
+                                           odd_ov if "Over" in mercado else odd_hcp
                                 todas_apostas_valor.append({
-                                    "Jogo": f"{j1} vs {j2}",
-                                    "Aposta": mercado,
-                                    "EV": ev,
-                                    "Odd Casa": odd_casa,
-                                    "Odd Justa": 1 / prob_mod if prob_mod > 0 else 999.0
+                                    "Jogo": f"{j1} vs {j2}", "Aposta": mercado, "EV": ev,
+                                    "Odd Casa": odd_casa, "Odd Justa": 1 / prob_mod if prob_mod > 0 else 999.0
                                 })
-                    except Exception as e:
-                        st.error(f"Erro ao processar a linha: '{linha_texto}'. Erro: {e}")
+                    except Exception:
+                        continue
             
             if todas_apostas_valor:
                 df_scanner = pd.DataFrame(todas_apostas_valor).sort_values(by="EV", ascending=False)
                 st.success(f"✅ Varrimento concluído! Encontradas {len(df_scanner)} apostas de valor.")
-                
                 df_visual = df_scanner.copy()
                 df_visual['EV'] = df_visual['EV'].apply(lambda x: f"+{x:.2%}")
                 df_visual['Odd Casa'] = df_visual['Odd Casa'].apply(lambda x: f"{x:.2f}")
                 df_visual['Odd Justa'] = df_visual['Odd Justa'].apply(lambda x: f"{x:.2f}")
-                
                 st.dataframe(df_visual, use_container_width=True)
             else:
-                st.warning(f"O scanner não encontrou nenhuma aposta que supere o limite de EV de +{limite_ev:.1%}.")
+                st.warning("O scanner não encontrou nenhuma aposta de valor.")
 
 # ==========================================
 # ABA 3: AUTO-SCANNER DE TEXTO BRUTO
 # ==========================================
 with tab3:
     st.header("Auto-Scanner Inteligente (Copiar & Colar)")
-    st.markdown("""
-    **Instruções:** Seleciona as jogadoras/jogadores na barra lateral (para carregar os seus respetivos Elos dinâmicos) e cola no bloco de texto abaixo as odds extraídas diretamente da tua casa de apostas. 
-    O parser identificará automaticamente as linhas de **Vencedor**, **Total de Jogos (Over/Under)**, **Handicaps de Jogo** e **Ganhar +1 Set** na simulação estável de 10.000 cenários.
-    """)
+    st.markdown("Seleciona os jogadores do texto colado para o modelo saber os respetivos Elos.")
     
+    # NOVAS SELEÇÕES EXCLUSIVAS PARA A ABA 3
+    c_scan1, c_scan2 = st.columns(2)
+    scan_p1 = c_scan1.selectbox("Favorito (Player 1 no texto)", jogadores, key="tab3_p1")
+    scan_p2 = c_scan2.selectbox("Underdog (Player 2 no texto)", jogadores, key="tab3_p2")
+    
+    stats_scan_p1 = get_player_stats(scan_p1, superficie)
+    stats_scan_p2 = get_player_stats(scan_p2, superficie)
+
     texto_odds = st.text_area("Cola as Odds da Casa de Apostas:", height=300, key="raw_text_area",
                               placeholder="Match winner\nPlayer 1: 2.18\nPlayer 2: 1.67\n...\nTotal games\nOver 21.5: 1.66\n...")
     
-    if st.button("Analisar Todas as Odds (Scan Texto)"):
-        if nome_p1 == nome_p2:
-            st.error("Seleciona jogadoras/jogadores diferentes na barra lateral.")
+    if st.button("Analisar Todas as Odds (Scan Texto)", key="btn_tab3"):
+        if scan_p1 == scan_p2:
+            st.error("Seleciona jogadoras/jogadores diferentes.")
         elif not texto_odds.strip():
             st.warning("Cola o texto com as odds primeiro.")
         else:
             with st.spinner("A simular e a analisar todas as linhas detetadas..."):
-                # 1. Parsing inteligente do texto copiado
                 mercados_extraidos = parse_bookmaker_text(texto_odds)
                 
-                # 2. Correr a Simulação Estável de 10.000 iterações
                 np.random.seed(42)
-                sims = [simulate_match_ml(stats_p1, stats_p2, (sets_input//2 + 1), ml_model, circuito) for _ in range(10000)]
+                sims = [simulate_match_ml(stats_scan_p1, stats_scan_p2, (sets_input//2 + 1), ml_model, circuito) for _ in range(10000)]
                 
                 totais = np.array([s[0] for s in sims])
                 diffs = np.array([s[1] for s in sims])
@@ -415,23 +382,20 @@ with tab3:
                 
                 lista_ev = []
                 
-                # Avaliar Match Winner
                 if 'P1' in mercados_extraidos['match_winner']:
                     odd = mercados_extraidos['match_winner']['P1']
-                    lista_ev.append({"Mercado": f"Vitória {nome_p1}", "Prob": prob_p1_win, "Odd": odd, "EV": (odd * prob_p1_win) - 1})
+                    lista_ev.append({"Mercado": f"Vitória {scan_p1}", "Prob": prob_p1_win, "Odd": odd, "EV": (odd * prob_p1_win) - 1})
                 if 'P2' in mercados_extraidos['match_winner']:
                     odd = mercados_extraidos['match_winner']['P2']
-                    lista_ev.append({"Mercado": f"Vitória {nome_p2}", "Prob": prob_p2_win, "Odd": odd, "EV": (odd * prob_p2_win) - 1})
+                    lista_ev.append({"Mercado": f"Vitória {scan_p2}", "Prob": prob_p2_win, "Odd": odd, "EV": (odd * prob_p2_win) - 1})
                 
-                # Avaliar Ganhar Pelo Menos 1 Set
                 if mercados_extraidos['p1_set']:
                     prob = np.mean(p1_sets_ganhos >= 1)
-                    lista_ev.append({"Mercado": f"{nome_p1} ganha +1 Set", "Prob": prob, "Odd": mercados_extraidos['p1_set'], "EV": (mercados_extraidos['p1_set'] * prob) - 1})
+                    lista_ev.append({"Mercado": f"{scan_p1} ganha +1 Set", "Prob": prob, "Odd": mercados_extraidos['p1_set'], "EV": (mercados_extraidos['p1_set'] * prob) - 1})
                 if mercados_extraidos['p2_set']:
                     prob = np.mean(p2_sets_ganhos >= 1)
-                    lista_ev.append({"Mercado": f"{nome_p2} ganha +1 Set", "Prob": prob, "Odd": mercados_extraidos['p2_set'], "EV": (mercados_extraidos['p2_set'] * prob) - 1})
+                    lista_ev.append({"Mercado": f"{scan_p2} ganha +1 Set", "Prob": prob, "Odd": mercados_extraidos['p2_set'], "EV": (mercados_extraidos['p2_set'] * prob) - 1})
                     
-                # Avaliar todos os Over/Under de Games detectados no texto
                 for linha_g, odds_ou in mercados_extraidos['total_games'].items():
                     if 'Over' in odds_ou:
                         prob = np.mean(totais > linha_g)
@@ -440,30 +404,24 @@ with tab3:
                         prob = np.mean(totais < linha_g)
                         lista_ev.append({"Mercado": f"Under {linha_g} Jogos", "Prob": prob, "Odd": odds_ou['Under'], "EV": (odds_ou['Under'] * prob) - 1})
                         
-                # Avaliar todos os Handicaps de Jogo de P1 detectados
                 for hcp_linha, odd in mercados_extraidos['game_handicap'].items():
                     prob = np.mean(diffs > abs(hcp_linha)) if hcp_linha < 0 else np.mean(diffs < -hcp_linha)
-                    lista_ev.append({"Mercado": f"Handicap {nome_p1} ({hcp_linha})", "Prob": prob, "Odd": odd, "EV": (odd * prob) - 1})
+                    lista_ev.append({"Mercado": f"Handicap {scan_p1} ({hcp_linha})", "Prob": prob, "Odd": odd, "EV": (odd * prob) - 1})
                     
-                # Filtragem e Apresentação dos Resultados
                 if lista_ev:
                     df_scan = pd.DataFrame(lista_ev).sort_values(by="EV", ascending=False)
                     df_scan_valor = df_scan[df_scan['EV'] >= limite_ev]
                     
                     if not df_scan_valor.empty:
                         st.success(f"🎯 O modelo detetou {len(df_scan_valor)} apostas com valor acima de +{limite_ev:.1%}!")
-                        
                         df_visual = df_scan_valor.copy()
                         df_visual['EV'] = df_visual['EV'].apply(lambda x: f"+{x:.2%}")
                         df_visual['Odd Justa'] = df_visual['Prob'].apply(lambda x: f"{1/x:.2f}" if x > 0 else "N/A")
                         df_visual['Prob'] = df_visual['Prob'].apply(lambda x: f"{x:.2%}")
                         df_visual['Odd'] = df_visual['Odd'].apply(lambda x: f"{x:.2f}")
-                        
                         st.dataframe(df_visual[['Mercado', 'Odd', 'Odd Justa', 'Prob', 'EV']], use_container_width=True)
                     else:
                         st.warning(f"❌ Nenhuma linha neste jogo oferece valor suficiente acima do limite de +{limite_ev:.1%}.")
-                        st.markdown("### As melhores opções avaliadas (Mesmo abaixo do limite):")
-                        
                         df_fallback = df_scan.head(5).copy()
                         df_fallback['EV'] = df_fallback['EV'].apply(lambda x: f"{x:.2%}")
                         df_fallback['Prob'] = df_fallback['Prob'].apply(lambda x: f"{x:.2%}")
