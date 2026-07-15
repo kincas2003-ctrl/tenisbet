@@ -5,10 +5,18 @@ import zipfile
 import os
 import joblib  
 import re
+from datetime import datetime
 
 # Configuração da página
 st.set_page_config(page_title="QuantBet OS", layout="wide")
 st.title("🎾 QuantBet OS: Sistema Quantitativo ATP & WTA")
+
+# --- 0. INICIALIZAÇÃO DA MEMÓRIA (SESSION STATE) ---
+# Isto permite que a Agenda envie os nomes dos jogadores para as outras abas
+if 'agenda_p1' not in st.session_state:
+    st.session_state['agenda_p1'] = None
+if 'agenda_p2' not in st.session_state:
+    st.session_state['agenda_p2'] = None
 
 # --- 1. CARREGAMENTO DE MODELOS E DADOS ---
 @st.cache_resource
@@ -54,7 +62,7 @@ jogadores = sorted(df_elos['Player'].dropna().unique())
 
 st.sidebar.header("2. Filtros de Valor")
 limite_ev = st.sidebar.slider("Limite de EV Aceitável (%)", min_value=1.0, max_value=15.0, value=5.0, step=0.5) / 100
-odd_minima_rec = st.sidebar.number_input("Odd Mínima Recomendada", value=1.50, step=0.05, help="O sistema ignora odds abaixo deste valor na recomendação.")
+odd_minima_rec = st.sidebar.number_input("Odd Mínima Recomendada", value=1.50, step=0.05)
 
 st.sidebar.header("⚙️ Condições & Ajustes de Jogo")
 vel_campo = st.sidebar.selectbox(
@@ -151,9 +159,7 @@ def simulate_match_ml(stats_p1, stats_p2, sets_to_win, ml_model, circuito, h2h_s
     p1_sets, p2_sets = 0, 0
     total_g, diff_g = 0, 0
     aces_p1, aces_p2 = 0, 0
-    
-    set1_p1_g, set1_p2_g = 0, 0
-    set2_p1_g, set2_p2_g = 0, 0
+    set1_p1_g, set1_p2_g, set2_p1_g, set2_p2_g = 0, 0, 0, 0
     
     while p1_sets < sets_to_win and p2_sets < sets_to_win:
         p1_g, p2_g = 0, 0
@@ -167,7 +173,6 @@ def simulate_match_ml(stats_p1, stats_p2, sets_to_win, ml_model, circuito, h2h_s
                 aces_p2 += np.random.poisson(rate_aces_p2) 
                 
             prob_p1_wins_game += np.random.normal(0, 0.02)
-            
             if np.random.random() < prob_p1_wins_game: p1_g += 1
             else: p2_g += 1
             if p1_g == 7 or p2_g == 7: break
@@ -190,7 +195,6 @@ def parse_bookmaker_text(text, p1_name="", p2_name=""):
         'game_handicap': {'P1': {}, 'P2': {}}, 'set_handicap': {'P1': {}, 'P2': {}},
         'total_sets': {}, 'p1_set': None, 'p2_set': None,
         'p1_total_games': {}, 'p2_total_games': {},
-        
         'set1_winner': {}, 'set1_total_games': {}, 'set1_handicap': {'P1': {}, 'P2': {}},
         'set2_winner': {}, 'set2_total_games': {}, 'set2_handicap': {'P1': {}, 'P2': {}},
         'total_aces': {}, 'p1_aces': {}, 'p2_aces': {}
@@ -222,26 +226,22 @@ def parse_bookmaker_text(text, p1_name="", p2_name=""):
             
             if any(x in header for x in ["par/ímpar", "odd/even", "exato", "exact", "correct", "duplo", "double result", "only one set", "apenas um set", "vencedor e", "winner and", "vencedor &", "winner &", "tie-break", "tie break"]): 
                 current_category = "Ignored"
-                
             elif any(x in header for x in ["aces", "ases"]):
                 if any(x in header for x in p1_tokens + ["player 1", "jogador 1", "casa"]): current_category = "p1_aces"
                 elif any(x in header for x in p2_tokens + ["player 2", "jogador 2", "fora"]): current_category = "p2_aces"
                 else: current_category = "total_aces"
-                
             elif any(x in header for x in ["set 1", "1º set", "1o set", "primeiro set", "1st set"]):
                 if any(x in header for x in p1_tokens + p2_tokens + ["player 1", "player 2", "jogador", "casa", "fora"]): current_category = "Ignored"
                 elif "handicap" in header: current_category = "set1_handicap"
                 elif any(x in header for x in ["total", "jogos", "games"]): current_category = "set1_total_games"
                 elif any(x in header for x in ["winner", "vencedor"]): current_category = "set1_winner"
                 else: current_category = "Ignored"
-                
             elif any(x in header for x in ["set 2", "2º set", "2o set", "segundo set", "2nd set"]):
                 if any(x in header for x in p1_tokens + p2_tokens + ["player 1", "player 2", "jogador", "casa", "fora"]): current_category = "Ignored"
                 elif "handicap" in header: current_category = "set2_handicap"
                 elif any(x in header for x in ["total", "jogos", "games"]): current_category = "set2_total_games"
                 elif any(x in header for x in ["winner", "vencedor"]): current_category = "set2_winner"
                 else: current_category = "Ignored"
-                
             elif any(x in header for x in p1_tokens + ["player 1", "jogador 1", "casa"]) and any(x in header for x in ["total", "jogos", "games"]):
                 current_category = "p1_total_games"
             elif any(x in header for x in p2_tokens + ["player 2", "jogador 2", "fora"]) and any(x in header for x in ["total", "jogos", "games"]):
@@ -291,7 +291,183 @@ def parse_bookmaker_text(text, p1_name="", p2_name=""):
     return markets
 
 # --- 6. ABAS DE TRABALHO ---
-tab1, tab2, tab3 = st.tabs(["🔍 Calculadora Manual", "🚀 CSV em Massa", "🤖 Auto-Scanner (Colar Texto)"])
+tab4, tab3, tab1, tab2 = st.tabs(["📅 Agenda do Dia", "🤖 Auto-Scanner", "🔍 Calculadora Manual", "🚀 CSV em Massa"])
+
+# Identificar índices na lista a partir do session_state
+try: default_idx_p1 = jogadores.index(st.session_state['agenda_p1']) if st.session_state['agenda_p1'] else 0
+except: default_idx_p1 = 0
+try: default_idx_p2 = jogadores.index(st.session_state['agenda_p2']) if st.session_state['agenda_p2'] else 1
+except: default_idx_p2 = 1
+
+# ==========================================
+# ABA 4: AGENDA DE TORNEIOS
+# ==========================================
+with tab4:
+    st.header("📅 Agenda de Torneios")
+    st.markdown("Nesta aba podes ver os jogos planeados. Ao clicares num jogo, os jogadores são automaticamente selecionados nas abas de Scanner e Calculadora.")
+    
+    # Criar uma Base de Dados Fictícia de Jogos do Dia (A substituir futuramente por API ou CSV de Agenda)
+    dados_agenda = {
+        'Torneio': ['ATP Challenger Amersfoort', 'ATP Challenger Amersfoort', 'WTA Palermo', 'WTA Palermo'],
+        'Data/Hora': ['Hoje 14:00', 'Hoje 15:30', 'Hoje 16:00', 'Amanhã 10:00'],
+        'P1': ['Jesper De Jong', 'Jaime Faria', 'Qinwen Zheng', 'Karolina Muchova'],
+        'P2': ['Sebastian Baez', 'Titouan Droguet', 'Sara Errani', 'Qinwen Zheng']
+    }
+    df_agenda = pd.DataFrame(dados_agenda)
+    
+    torneios = df_agenda['Torneio'].unique()
+    for torneio in torneios:
+        with st.expander(f"🏆 {torneio}", expanded=True):
+            jogos_torneio = df_agenda[df_agenda['Torneio'] == torneio]
+            for idx, jogo in jogos_torneio.iterrows():
+                col_hora, col_jogo, col_btn = st.columns([2, 6, 2])
+                col_hora.markdown(f"🕒 `{jogo['Data/Hora']}`")
+                col_jogo.markdown(f"**{jogo['P1']}** vs **{jogo['P2']}**")
+                
+                if col_btn.button("Carregar Jogo", key=f"btn_agenda_{idx}"):
+                    st.session_state['agenda_p1'] = jogo['P1']
+                    st.session_state['agenda_p2'] = jogo['P2']
+                    st.success(f"✅ {jogo['P1']} vs {jogo['P2']} carregado! Vai à aba **Auto-Scanner**.")
+
+# ==========================================
+# ABA 3: AUTO-SCANNER DE TEXTO BRUTO
+# ==========================================
+with tab3:
+    st.header("Auto-Scanner Inteligente (Copiar & Colar)")
+    st.info("💡 **Dica:** Usa a aba **Agenda do Dia** para preencher automaticamente os jogadores abaixo.")
+    
+    c_scan1, c_scan2 = st.columns(2)
+    scan_p1 = c_scan1.selectbox("Favorito (Player 1 no texto)", jogadores, index=default_idx_p1, key="tab3_p1")
+    scan_p2 = c_scan2.selectbox("Underdog (Player 2 no texto)", jogadores, index=default_idx_p2, key="tab3_p2")
+    
+    stats_scan_p1 = get_player_stats(scan_p1, superficie, circuito)
+    stats_scan_p2 = get_player_stats(scan_p2, superficie, circuito)
+    h2h_scan_vals = calculate_h2h(scan_p1, scan_p2)
+
+    st.markdown("**⚔️ Correção Manual de H2H**")
+    col_h1, col_h2 = st.columns(2)
+    h2h_p1_manual_t3 = col_h1.number_input(f"Vitórias de {scan_p1}", value=int(h2h_scan_vals[0]), min_value=0, step=1, key="h2h_t3_p1")
+    h2h_p2_manual_t3 = col_h2.number_input(f"Vitórias de {scan_p2}", value=int(h2h_scan_vals[1]), min_value=0, step=1, key="h2h_t3_p2")
+
+    texto_odds = st.text_area("Cola as Odds da Casa de Apostas:", height=300, key="raw_text_area")
+    
+    if st.button("Analisar Todas as Odds (Scan Texto)", key="btn_tab3"):
+        if scan_p1 == scan_p2:
+            st.error("Seleciona jogadoras/jogadores diferentes.")
+        elif not texto_odds.strip():
+            st.warning("Cola o texto com as odds primeiro.")
+        else:
+            with st.spinner("A simular e a analisar todas as linhas detetadas..."):
+                mercados_extraidos = parse_bookmaker_text(texto_odds, scan_p1, scan_p2)
+                
+                np.random.seed(42)
+                sims = [simulate_match_ml(stats_scan_p1, stats_scan_p2, (sets_input//2 + 1), ml_model, circuito, (h2h_p1_manual_t3, h2h_p2_manual_t3)) for _ in range(10000)]
+                
+                totais = np.array([s[0] for s in sims])
+                diffs = np.array([s[1] for s in sims])
+                p1_sets_ganhos = np.array([s[2] for s in sims])
+                p2_sets_ganhos = np.array([s[3] for s in sims])
+                s1_p1 = np.array([s[4] for s in sims])
+                s1_p2 = np.array([s[5] for s in sims])
+                aces_p1 = np.array([s[8] for s in sims])
+                aces_p2 = np.array([s[9] for s in sims])
+                total_aces = aces_p1 + aces_p2
+                
+                p1_games_ganhos = (totais + diffs) / 2
+                p2_games_ganhos = (totais - diffs) / 2
+                
+                lista_ev = []
+                
+                prob_p1_win = np.mean(p1_sets_ganhos > p2_sets_ganhos)
+                if 'P1' in mercados_extraidos['match_winner']:
+                    odd = mercados_extraidos['match_winner']['P1']
+                    lista_ev.append({"Mercado": f"Vitória {scan_p1}", "Prob": prob_p1_win, "Odd": odd, "EV": (odd * prob_p1_win) - 1})
+                if 'P2' in mercados_extraidos['match_winner']:
+                    odd = mercados_extraidos['match_winner']['P2']
+                    lista_ev.append({"Mercado": f"Vitória {scan_p2}", "Prob": 1-prob_p1_win, "Odd": odd, "EV": (odd * (1-prob_p1_win)) - 1})
+                
+                for linha_g, odds_ou in mercados_extraidos['total_games'].items():
+                    if 'Over' in odds_ou: lista_ev.append({"Mercado": f"Over {linha_g} Jogos", "Prob": np.mean(totais > linha_g), "Odd": odds_ou['Over'], "EV": (odds_ou['Over'] * np.mean(totais > linha_g)) - 1})
+                    if 'Under' in odds_ou: lista_ev.append({"Mercado": f"Under {linha_g} Jogos", "Prob": np.mean(totais < linha_g), "Odd": odds_ou['Under'], "EV": (odds_ou['Under'] * np.mean(totais < linha_g)) - 1})
+
+                for linha_g, odds_ou in mercados_extraidos['p1_total_games'].items():
+                    if 'Over' in odds_ou: lista_ev.append({"Mercado": f"Over {linha_g} Jogos ({scan_p1})", "Prob": np.mean(p1_games_ganhos > linha_g), "Odd": odds_ou['Over'], "EV": (odds_ou['Over'] * np.mean(p1_games_ganhos > linha_g)) - 1})
+                    if 'Under' in odds_ou: lista_ev.append({"Mercado": f"Under {linha_g} Jogos ({scan_p1})", "Prob": np.mean(p1_games_ganhos < linha_g), "Odd": odds_ou['Under'], "EV": (odds_ou['Under'] * np.mean(p1_games_ganhos < linha_g)) - 1})
+
+                for linha_g, odds_ou in mercados_extraidos['p2_total_games'].items():
+                    if 'Over' in odds_ou: lista_ev.append({"Mercado": f"Over {linha_g} Jogos ({scan_p2})", "Prob": np.mean(p2_games_ganhos > linha_g), "Odd": odds_ou['Over'], "EV": (odds_ou['Over'] * np.mean(p2_games_ganhos > linha_g)) - 1})
+                    if 'Under' in odds_ou: lista_ev.append({"Mercado": f"Under {linha_g} Jogos ({scan_p2})", "Prob": np.mean(p2_games_ganhos < linha_g), "Odd": odds_ou['Under'], "EV": (odds_ou['Under'] * np.mean(p2_games_ganhos < linha_g)) - 1})
+
+                for linha_s, odds_ou in mercados_extraidos['total_sets'].items():
+                    if 'Over' in odds_ou: lista_ev.append({"Mercado": f"Over {linha_s} Sets", "Prob": np.mean((p1_sets_ganhos + p2_sets_ganhos) > linha_s), "Odd": odds_ou['Over'], "EV": (odds_ou['Over'] * np.mean((p1_sets_ganhos + p2_sets_ganhos) > linha_s)) - 1})
+                    if 'Under' in odds_ou: lista_ev.append({"Mercado": f"Under {linha_s} Sets", "Prob": np.mean((p1_sets_ganhos + p2_sets_ganhos) < linha_s), "Odd": odds_ou['Under'], "EV": (odds_ou['Under'] * np.mean((p1_sets_ganhos + p2_sets_ganhos) < linha_s)) - 1})
+
+                for hcp_linha, odd in mercados_extraidos['game_handicap']['P1'].items():
+                    prob = np.mean(diffs > -hcp_linha)  
+                    linha_str = f"+{hcp_linha}" if hcp_linha > 0 else f"{hcp_linha}"
+                    lista_ev.append({"Mercado": f"Handicap Games {scan_p1} ({linha_str})", "Prob": prob, "Odd": odd, "EV": (odd * prob) - 1})
+
+                for hcp_linha, odd in mercados_extraidos['game_handicap']['P2'].items():
+                    prob = np.mean(diffs < hcp_linha)  
+                    linha_str = f"+{hcp_linha}" if hcp_linha > 0 else f"{hcp_linha}"
+                    lista_ev.append({"Mercado": f"Handicap Games {scan_p2} ({linha_str})", "Prob": prob, "Odd": odd, "EV": (odd * prob) - 1})
+
+                for hcp_linha, odd in mercados_extraidos['set_handicap']['P1'].items():
+                    prob_set = np.mean((p1_sets_ganhos - p2_sets_ganhos) > -hcp_linha)
+                    linha_str = f"+{hcp_linha}" if hcp_linha > 0 else f"{hcp_linha}"
+                    lista_ev.append({"Mercado": f"Handicap Sets {scan_p1} ({linha_str})", "Prob": prob_set, "Odd": odd, "EV": (odd * prob_set) - 1})
+
+                for hcp_linha, odd in mercados_extraidos['set_handicap']['P2'].items():
+                    prob_set = np.mean((p1_sets_ganhos - p2_sets_ganhos) < hcp_linha)
+                    linha_str = f"+{hcp_linha}" if hcp_linha > 0 else f"{hcp_linha}"
+                    lista_ev.append({"Mercado": f"Handicap Sets {scan_p2} ({linha_str})", "Prob": prob_set, "Odd": odd, "EV": (odd * prob_set) - 1})
+
+                for linha_g, odds_ou in mercados_extraidos['total_aces'].items():
+                    if 'Over' in odds_ou: lista_ev.append({"Mercado": f"Over {linha_g} Ases", "Prob": np.mean(total_aces > linha_g), "Odd": odds_ou['Over'], "EV": (odds_ou['Over'] * np.mean(total_aces > linha_g)) - 1})
+                    if 'Under' in odds_ou: lista_ev.append({"Mercado": f"Under {linha_g} Ases", "Prob": np.mean(total_aces < linha_g), "Odd": odds_ou['Under'], "EV": (odds_ou['Under'] * np.mean(total_aces < linha_g)) - 1})
+                
+                prob_s1_p1 = np.mean(s1_p1 > s1_p2)
+                if 'P1' in mercados_extraidos['set1_winner']: lista_ev.append({"Mercado": f"Vence 1º Set {scan_p1}", "Prob": prob_s1_p1, "Odd": mercados_extraidos['set1_winner']['P1'], "EV": (mercados_extraidos['set1_winner']['P1'] * prob_s1_p1) - 1})
+                if 'P2' in mercados_extraidos['set1_winner']: lista_ev.append({"Mercado": f"Vence 1º Set {scan_p2}", "Prob": 1-prob_s1_p1, "Odd": mercados_extraidos['set1_winner']['P2'], "EV": (mercados_extraidos['set1_winner']['P2'] * (1-prob_s1_p1)) - 1})
+                
+                for linha_g, odds_ou in mercados_extraidos['set1_total_games'].items():
+                    if 'Over' in odds_ou: lista_ev.append({"Mercado": f"Over {linha_g} Jogos no 1º Set", "Prob": np.mean((s1_p1 + s1_p2) > linha_g), "Odd": odds_ou['Over'], "EV": (odds_ou['Over'] * np.mean((s1_p1 + s1_p2) > linha_g)) - 1})
+                    if 'Under' in odds_ou: lista_ev.append({"Mercado": f"Under {linha_g} Jogos no 1º Set", "Prob": np.mean((s1_p1 + s1_p2) < linha_g), "Odd": odds_ou['Under'], "EV": (odds_ou['Under'] * np.mean((s1_p1 + s1_p2) < linha_g)) - 1})
+
+                for hcp_linha, odd in mercados_extraidos['set1_handicap']['P1'].items():
+                    prob = np.mean((s1_p1 - s1_p2) > -hcp_linha)  
+                    linha_str = f"+{hcp_linha}" if hcp_linha > 0 else f"{hcp_linha}"
+                    lista_ev.append({"Mercado": f"Handicap 1º Set {scan_p1} ({linha_str})", "Prob": prob, "Odd": odd, "EV": (odd * prob) - 1})
+
+                if lista_ev:
+                    df_scan = pd.DataFrame(lista_ev).sort_values(by="EV", ascending=False)
+                    df_scan['Status'] = df_scan['EV'].apply(lambda x: "✅ Valor" if x >= limite_ev else "❌ Evitar")
+                    
+                    df_scan_valor = df_scan[df_scan['EV'] >= limite_ev].copy()
+                    
+                    if not df_scan_valor.empty:
+                        df_scan_valor['Kelly_Score'] = df_scan_valor['EV'] / (df_scan_valor['Odd'] - 1)
+                        df_elegiveis = df_scan_valor[df_scan_valor['Odd'] >= odd_minima_rec]
+                        
+                        if not df_elegiveis.empty: melhor_aposta = df_elegiveis.loc[df_elegiveis['Kelly_Score'].idxmax()]
+                        else: melhor_aposta = df_scan_valor.loc[df_scan_valor['Kelly_Score'].idxmax()]
+                        
+                        sugestao_banca_decimal = np.clip(float(melhor_aposta['Kelly_Score'] * 0.10), 0.005, 0.035)
+                        
+                        st.markdown("---")
+                        st.markdown("### 🏆 Aposta Recomendada (Melhor Risco/Benefício)")
+                        st.success(f"**Mercado:** {melhor_aposta['Mercado']}\n\n**Odd Oferecida:** {melhor_aposta['Odd']:.2f} | **Probabilidade:** {melhor_aposta['Prob']:.1%} | **EV:** +{melhor_aposta['EV']:.1%}\n\n⚖️ **Banca Sugerida:** **{sugestao_banca_decimal:.1%}**.")
+                        st.markdown("---")
+                        
+                    st.markdown("#### 📋 Auditoria Completa ao Mercado")
+                    df_visual_all = df_scan.copy()
+                    df_visual_all['EV'] = df_visual_all['EV'].apply(lambda x: f"{'+' if x>0 else ''}{x:.2%}")
+                    df_visual_all['Odd Justa'] = df_visual_all['Prob'].apply(lambda x: f"{1/x:.2f}" if x > 0 else "N/A")
+                    df_visual_all['Prob'] = df_visual_all['Prob'].apply(lambda x: f"{x:.2%}")
+                    df_visual_all['Odd'] = df_visual_all['Odd'].apply(lambda x: f"{x:.2f}")
+                    st.dataframe(df_visual_all[['Status', 'Mercado', 'Odd', 'Odd Justa', 'Prob', 'EV']], use_container_width=True)
+                else:
+                    st.error("Não foram encontrados mercados com valor. Verifica a formatação do texto.")
 
 # ==========================================
 # ABA 1: CALCULADORA MANUAL
@@ -299,8 +475,8 @@ tab1, tab2, tab3 = st.tabs(["🔍 Calculadora Manual", "🚀 CSV em Massa", "�
 with tab1:
     st.header("Análise de Partida Única")
     c1, c2 = st.columns(2)
-    nome_p1 = c1.selectbox("Favorito (P1)", jogadores, key="tab1_p1")
-    nome_p2 = c2.selectbox("Underdog (P2)", jogadores, key="tab1_p2")
+    nome_p1 = c1.selectbox("Favorito (P1)", jogadores, index=default_idx_p1, key="tab1_p1")
+    nome_p2 = c2.selectbox("Underdog (P2)", jogadores, index=default_idx_p2, key="tab1_p2")
 
     stats_p1 = get_player_stats(nome_p1, superficie, circuito)
     stats_p2 = get_player_stats(nome_p2, superficie, circuito)
@@ -312,10 +488,10 @@ with tab1:
     c2.metric(f"Elo {superficie} {nome_p2}", f"{stats_p2['elo']:.1f}")
     c2.markdown(f"📈 Forma Recente: `{stats_p2['recent_form']:.0%}` | 💤 Fadiga: `{stats_p2['fatigue']}`")
     
-    st.markdown("**⚔️ Correção Manual de H2H** (BD Automática preenchida)")
+    st.markdown("**⚔️ Correção Manual de H2H**")
     ch1, ch2 = st.columns(2)
-    h2h_p1_manual_t1 = ch1.number_input(f"Vitórias reais de {nome_p1}", value=int(h2h_p1_bd), min_value=0, step=1, key="h2h_t1_p1")
-    h2h_p2_manual_t1 = ch2.number_input(f"Vitórias reais de {nome_p2}", value=int(h2h_p2_bd), min_value=0, step=1, key="h2h_t1_p2")
+    h2h_p1_manual_t1 = ch1.number_input(f"Vitórias de {nome_p1}", value=int(h2h_p1_bd), min_value=0, step=1, key="h2h_t1_p1")
+    h2h_p2_manual_t1 = ch2.number_input(f"Vitórias de {nome_p2}", value=int(h2h_p2_bd), min_value=0, step=1, key="h2h_t1_p2")
 
     st.subheader("Odds Disponíveis na Casa de Apostas")
     col_o1, col_o2, col_o3, col_o4 = st.columns(4)
@@ -323,8 +499,6 @@ with tab1:
     odd_p2_casa = col_o2.number_input(f"Odd {nome_p2}", value=2.15, step=0.01, key="odd_manual_p2")
     odd_over_casa = col_o3.number_input("Odd Over Jogos", value=1.85, step=0.01, key="odd_manual_over")
     odd_hcp_casa = col_o4.number_input("Odd Handicap P1", value=1.90, step=0.01, key="odd_manual_hcp")
-
-    st.divider()
 
     if st.button("Executar Sistema Quantitativo", key="btn_tab1"):
         if nome_p1 == nome_p2:
@@ -346,8 +520,6 @@ with tab1:
             
             h = -2.5
             prob_h = np.mean(diffs > -h)  
-            prob_p2_set = np.mean(p2_sets_ganhos >= 1)
-            odd_justa_p2_set = 1 / prob_p2_set if prob_p2_set > 0 else 999.0
             
             ev_p1 = (odd_p1_casa * prob_p1_win) - 1
             ev_p2 = (odd_p2_casa * prob_p2_win) - 1
@@ -439,162 +611,3 @@ with tab2:
                 st.dataframe(df_visual, use_container_width=True)
             else:
                 st.warning("O scanner não encontrou nenhuma aposta de valor.")
-
-# ==========================================
-# ABA 3: AUTO-SCANNER DE TEXTO BRUTO
-# ==========================================
-with tab3:
-    st.header("Auto-Scanner Inteligente (Copiar & Colar)")
-    st.markdown("Seleciona os jogadores do texto colado para o modelo processar os respetivos Elos e calcular os mercados.")
-    
-    c_scan1, c_scan2 = st.columns(2)
-    scan_p1 = c_scan1.selectbox("Favorito (Player 1 no texto)", jogadores, key="tab3_p1")
-    scan_p2 = c_scan2.selectbox("Underdog (Player 2 no texto)", jogadores, key="tab3_p2")
-    
-    stats_scan_p1 = get_player_stats(scan_p1, superficie, circuito)
-    stats_scan_p2 = get_player_stats(scan_p2, superficie, circuito)
-    h2h_scan_vals = calculate_h2h(scan_p1, scan_p2)
-
-    st.markdown("**⚔️ Correção Manual de H2H** (Ajusta vitórias caso falte info no CSV)")
-    col_h1, col_h2 = st.columns(2)
-    h2h_p1_manual_t3 = col_h1.number_input(f"Vitórias reais de {scan_p1}", value=int(h2h_scan_vals[0]), min_value=0, step=1, key="h2h_t3_p1")
-    h2h_p2_manual_t3 = col_h2.number_input(f"Vitórias reais de {scan_p2}", value=int(h2h_scan_vals[1]), min_value=0, step=1, key="h2h_t3_p2")
-
-    texto_odds = st.text_area("Cola as Odds da Casa de Apostas:", height=300, key="raw_text_area")
-    
-    if st.button("Analisar Todas as Odds (Scan Texto)", key="btn_tab3"):
-        if scan_p1 == scan_p2:
-            st.error("Seleciona jogadoras/jogadores diferentes.")
-        elif not texto_odds.strip():
-            st.warning("Cola o texto com as odds primeiro.")
-        else:
-            with st.spinner("A simular e a analisar todas as linhas detetadas..."):
-                mercados_extraidos = parse_bookmaker_text(texto_odds, scan_p1, scan_p2)
-                
-                np.random.seed(42)
-                sims = [simulate_match_ml(stats_scan_p1, stats_scan_p2, (sets_input//2 + 1), ml_model, circuito, (h2h_p1_manual_t3, h2h_p2_manual_t3)) for _ in range(10000)]
-                
-                totais = np.array([s[0] for s in sims])
-                diffs = np.array([s[1] for s in sims])
-                p1_sets_ganhos = np.array([s[2] for s in sims])
-                p2_sets_ganhos = np.array([s[3] for s in sims])
-                s1_p1 = np.array([s[4] for s in sims])
-                s1_p2 = np.array([s[5] for s in sims])
-                s2_p1 = np.array([s[6] for s in sims])
-                s2_p2 = np.array([s[7] for s in sims])
-                aces_p1 = np.array([s[8] for s in sims])
-                aces_p2 = np.array([s[9] for s in sims])
-                total_aces = aces_p1 + aces_p2
-                
-                p1_games_ganhos = (totais + diffs) / 2
-                p2_games_ganhos = (totais - diffs) / 2
-                
-                lista_ev = []
-                
-                # --- MERCADOS DO ENCONTRO ---
-                prob_p1_win = np.mean(p1_sets_ganhos > p2_sets_ganhos)
-                if 'P1' in mercados_extraidos['match_winner']:
-                    odd = mercados_extraidos['match_winner']['P1']
-                    lista_ev.append({"Mercado": f"Vitória {scan_p1}", "Prob": prob_p1_win, "Odd": odd, "EV": (odd * prob_p1_win) - 1})
-                if 'P2' in mercados_extraidos['match_winner']:
-                    odd = mercados_extraidos['match_winner']['P2']
-                    lista_ev.append({"Mercado": f"Vitória {scan_p2}", "Prob": 1-prob_p1_win, "Odd": odd, "EV": (odd * (1-prob_p1_win)) - 1})
-                
-                for linha_g, odds_ou in mercados_extraidos['total_games'].items():
-                    if 'Over' in odds_ou: lista_ev.append({"Mercado": f"Over {linha_g} Jogos", "Prob": np.mean(totais > linha_g), "Odd": odds_ou['Over'], "EV": (odds_ou['Over'] * np.mean(totais > linha_g)) - 1})
-                    if 'Under' in odds_ou: lista_ev.append({"Mercado": f"Under {linha_g} Jogos", "Prob": np.mean(totais < linha_g), "Odd": odds_ou['Under'], "EV": (odds_ou['Under'] * np.mean(totais < linha_g)) - 1})
-
-                for linha_g, odds_ou in mercados_extraidos['p1_total_games'].items():
-                    if 'Over' in odds_ou: lista_ev.append({"Mercado": f"Over {linha_g} Jogos ({scan_p1})", "Prob": np.mean(p1_games_ganhos > linha_g), "Odd": odds_ou['Over'], "EV": (odds_ou['Over'] * np.mean(p1_games_ganhos > linha_g)) - 1})
-                    if 'Under' in odds_ou: lista_ev.append({"Mercado": f"Under {linha_g} Jogos ({scan_p1})", "Prob": np.mean(p1_games_ganhos < linha_g), "Odd": odds_ou['Under'], "EV": (odds_ou['Under'] * np.mean(p1_games_ganhos < linha_g)) - 1})
-
-                for linha_g, odds_ou in mercados_extraidos['p2_total_games'].items():
-                    if 'Over' in odds_ou: lista_ev.append({"Mercado": f"Over {linha_g} Jogos ({scan_p2})", "Prob": np.mean(p2_games_ganhos > linha_g), "Odd": odds_ou['Over'], "EV": (odds_ou['Over'] * np.mean(p2_games_ganhos > linha_g)) - 1})
-                    if 'Under' in odds_ou: lista_ev.append({"Mercado": f"Under {linha_g} Jogos ({scan_p2})", "Prob": np.mean(p2_games_ganhos < linha_g), "Odd": odds_ou['Under'], "EV": (odds_ou['Under'] * np.mean(p2_games_ganhos < linha_g)) - 1})
-
-                for linha_s, odds_ou in mercados_extraidos['total_sets'].items():
-                    if 'Over' in odds_ou: lista_ev.append({"Mercado": f"Over {linha_s} Sets", "Prob": np.mean((p1_sets_ganhos + p2_sets_ganhos) > linha_s), "Odd": odds_ou['Over'], "EV": (odds_ou['Over'] * np.mean((p1_sets_ganhos + p2_sets_ganhos) > linha_s)) - 1})
-                    if 'Under' in odds_ou: lista_ev.append({"Mercado": f"Under {linha_s} Sets", "Prob": np.mean((p1_sets_ganhos + p2_sets_ganhos) < linha_s), "Odd": odds_ou['Under'], "EV": (odds_ou['Under'] * np.mean((p1_sets_ganhos + p2_sets_ganhos) < linha_s)) - 1})
-
-                for hcp_linha, odd in mercados_extraidos['game_handicap']['P1'].items():
-                    prob = np.mean(diffs > -hcp_linha)  
-                    linha_str = f"+{hcp_linha}" if hcp_linha > 0 else f"{hcp_linha}"
-                    lista_ev.append({"Mercado": f"Handicap Games {scan_p1} ({linha_str})", "Prob": prob, "Odd": odd, "EV": (odd * prob) - 1})
-
-                for hcp_linha, odd in mercados_extraidos['game_handicap']['P2'].items():
-                    prob = np.mean(diffs < hcp_linha)  
-                    linha_str = f"+{hcp_linha}" if hcp_linha > 0 else f"{hcp_linha}"
-                    lista_ev.append({"Mercado": f"Handicap Games {scan_p2} ({linha_str})", "Prob": prob, "Odd": odd, "EV": (odd * prob) - 1})
-
-                for hcp_linha, odd in mercados_extraidos['set_handicap']['P1'].items():
-                    prob_set = np.mean((p1_sets_ganhos - p2_sets_ganhos) > -hcp_linha)
-                    linha_str = f"+{hcp_linha}" if hcp_linha > 0 else f"{hcp_linha}"
-                    lista_ev.append({"Mercado": f"Handicap Sets {scan_p1} ({linha_str})", "Prob": prob_set, "Odd": odd, "EV": (odd * prob_set) - 1})
-
-                for hcp_linha, odd in mercados_extraidos['set_handicap']['P2'].items():
-                    prob_set = np.mean((p1_sets_ganhos - p2_sets_ganhos) < hcp_linha)
-                    linha_str = f"+{hcp_linha}" if hcp_linha > 0 else f"{hcp_linha}"
-                    lista_ev.append({"Mercado": f"Handicap Sets {scan_p2} ({linha_str})", "Prob": prob_set, "Odd": odd, "EV": (odd * prob_set) - 1})
-
-                # --- MERCADOS DE ASES ---
-                for linha_g, odds_ou in mercados_extraidos['total_aces'].items():
-                    if 'Over' in odds_ou: lista_ev.append({"Mercado": f"Over {linha_g} Ases", "Prob": np.mean(total_aces > linha_g), "Odd": odds_ou['Over'], "EV": (odds_ou['Over'] * np.mean(total_aces > linha_g)) - 1})
-                    if 'Under' in odds_ou: lista_ev.append({"Mercado": f"Under {linha_g} Ases", "Prob": np.mean(total_aces < linha_g), "Odd": odds_ou['Under'], "EV": (odds_ou['Under'] * np.mean(total_aces < linha_g)) - 1})
-                
-                for linha_g, odds_ou in mercados_extraidos['p1_aces'].items():
-                    if 'Over' in odds_ou: lista_ev.append({"Mercado": f"Over {linha_g} Ases ({scan_p1})", "Prob": np.mean(aces_p1 > linha_g), "Odd": odds_ou['Over'], "EV": (odds_ou['Over'] * np.mean(aces_p1 > linha_g)) - 1})
-                    if 'Under' in odds_ou: lista_ev.append({"Mercado": f"Under {linha_g} Ases ({scan_p1})", "Prob": np.mean(aces_p1 < linha_g), "Odd": odds_ou['Under'], "EV": (odds_ou['Under'] * np.mean(aces_p1 < linha_g)) - 1})
-
-                for linha_g, odds_ou in mercados_extraidos['p2_aces'].items():
-                    if 'Over' in odds_ou: lista_ev.append({"Mercado": f"Over {linha_g} Ases ({scan_p2})", "Prob": np.mean(aces_p2 > linha_g), "Odd": odds_ou['Over'], "EV": (odds_ou['Over'] * np.mean(aces_p2 > linha_g)) - 1})
-                    if 'Under' in odds_ou: lista_ev.append({"Mercado": f"Under {linha_g} Ases ({scan_p2})", "Prob": np.mean(aces_p2 < linha_g), "Odd": odds_ou['Under'], "EV": (odds_ou['Under'] * np.mean(aces_p2 < linha_g)) - 1})
-
-                # --- MERCADOS DO 1º SET ---
-                prob_s1_p1 = np.mean(s1_p1 > s1_p2)
-                if 'P1' in mercados_extraidos['set1_winner']: lista_ev.append({"Mercado": f"Vence 1º Set {scan_p1}", "Prob": prob_s1_p1, "Odd": mercados_extraidos['set1_winner']['P1'], "EV": (mercados_extraidos['set1_winner']['P1'] * prob_s1_p1) - 1})
-                if 'P2' in mercados_extraidos['set1_winner']: lista_ev.append({"Mercado": f"Vence 1º Set {scan_p2}", "Prob": 1-prob_s1_p1, "Odd": mercados_extraidos['set1_winner']['P2'], "EV": (mercados_extraidos['set1_winner']['P2'] * (1-prob_s1_p1)) - 1})
-                
-                for linha_g, odds_ou in mercados_extraidos['set1_total_games'].items():
-                    if 'Over' in odds_ou: lista_ev.append({"Mercado": f"Over {linha_g} Jogos no 1º Set", "Prob": np.mean((s1_p1 + s1_p2) > linha_g), "Odd": odds_ou['Over'], "EV": (odds_ou['Over'] * np.mean((s1_p1 + s1_p2) > linha_g)) - 1})
-                    if 'Under' in odds_ou: lista_ev.append({"Mercado": f"Under {linha_g} Jogos no 1º Set", "Prob": np.mean((s1_p1 + s1_p2) < linha_g), "Odd": odds_ou['Under'], "EV": (odds_ou['Under'] * np.mean((s1_p1 + s1_p2) < linha_g)) - 1})
-
-                for hcp_linha, odd in mercados_extraidos['set1_handicap']['P1'].items():
-                    prob = np.mean((s1_p1 - s1_p2) > -hcp_linha)  
-                    linha_str = f"+{hcp_linha}" if hcp_linha > 0 else f"{hcp_linha}"
-                    lista_ev.append({"Mercado": f"Handicap 1º Set {scan_p1} ({linha_str})", "Prob": prob, "Odd": odd, "EV": (odd * prob) - 1})
-                    
-                for hcp_linha, odd in mercados_extraidos['set1_handicap']['P2'].items():
-                    prob = np.mean((s1_p1 - s1_p2) < hcp_linha)  
-                    linha_str = f"+{hcp_linha}" if hcp_linha > 0 else f"{hcp_linha}"
-                    lista_ev.append({"Mercado": f"Handicap 1º Set {scan_p2} ({linha_str})", "Prob": prob, "Odd": odd, "EV": (odd * prob) - 1})
-
-                # --- APRESENTAÇÃO ---
-                if lista_ev:
-                    df_scan = pd.DataFrame(lista_ev).sort_values(by="EV", ascending=False)
-                    df_scan['Status'] = df_scan['EV'].apply(lambda x: "✅ Valor" if x >= limite_ev else "❌ Evitar")
-                    
-                    df_scan_valor = df_scan[df_scan['EV'] >= limite_ev].copy()
-                    
-                    if not df_scan_valor.empty:
-                        df_scan_valor['Kelly_Score'] = df_scan_valor['EV'] / (df_scan_valor['Odd'] - 1)
-                        df_elegiveis = df_scan_valor[df_scan_valor['Odd'] >= odd_minima_rec]
-                        
-                        if not df_elegiveis.empty: melhor_aposta = df_elegiveis.loc[df_elegiveis['Kelly_Score'].idxmax()]
-                        else: melhor_aposta = df_scan_valor.loc[df_scan_valor['Kelly_Score'].idxmax()]
-                        
-                        sugestao_banca_decimal = np.clip(float(melhor_aposta['Kelly_Score'] * 0.10), 0.005, 0.035)
-                        
-                        st.markdown("---")
-                        st.markdown("### 🏆 Aposta Recomendada (Melhor Risco/Benefício)")
-                        st.success(f"**Mercado:** {melhor_aposta['Mercado']}\n\n**Odd Oferecida:** {melhor_aposta['Odd']:.2f} | **Probabilidade:** {melhor_aposta['Prob']:.1%} | **EV:** +{melhor_aposta['EV']:.1%}\n\n⚖️ **Banca Sugerida:** **{sugestao_banca_decimal:.1%}**.")
-                        st.markdown("---")
-                        
-                    st.markdown("#### 📋 Auditoria Completa ao Mercado")
-                    df_visual_all = df_scan.copy()
-                    df_visual_all['EV'] = df_visual_all['EV'].apply(lambda x: f"{'+' if x>0 else ''}{x:.2%}")
-                    df_visual_all['Odd Justa'] = df_visual_all['Prob'].apply(lambda x: f"{1/x:.2f}" if x > 0 else "N/A")
-                    df_visual_all['Prob'] = df_visual_all['Prob'].apply(lambda x: f"{x:.2%}")
-                    df_visual_all['Odd'] = df_visual_all['Odd'].apply(lambda x: f"{x:.2f}")
-                    st.dataframe(df_visual_all[['Status', 'Mercado', 'Odd', 'Odd Justa', 'Prob', 'EV']], use_container_width=True)
-                else:
-                    st.error("Não foram encontrados mercados com valor. Verifica a formatação do texto.")
