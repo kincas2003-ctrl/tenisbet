@@ -131,8 +131,7 @@ superficie = st.sidebar.selectbox("Superfície", sorted(df['surface'].dropna().u
 sets_padrao = [3] if circuito == "WTA (Feminino)" else [3, 5]
 sets_input = st.sidebar.radio("Sets do Encontro", sets_padrao)
 
-# --- CORREÇÃO DA SELEÇÃO DE JOGADORES ---
-# Em vez de filtrar por 'df', extraímos os nomes diretamente do ficheiro Elo ativo (ATP ou WTA)
+# Correção WTA/ATP: filtra os nomes apenas do ficheiro de elo correspondente ativo
 jogadores = sorted(df_elos['Player'].dropna().unique())
 
 c1, c2 = st.columns(2)
@@ -160,7 +159,15 @@ if st.button("Executar Sistema Quantitativo"):
     if nome_p1 == nome_p2:
         st.error("Seleciona jogadoras/jogadores diferentes.")
     else:
-        sims = [simulate_match_ml(stats_p1, stats_p2, (sets_input//2 + 1), ml_model, circuito) for _ in range(5000)]
+        # ==========================================
+        # ESTABILIZAÇÃO ABSOLUTA DO MONTE CARLO
+        # ==========================================
+        np.random.seed(42) # Força a mesma semente em cada clique do botão
+        
+        # Subimos para 10.000 simulações para garantir convergência estatística firme
+        sims = [simulate_match_ml(stats_p1, stats_p2, (sets_input//2 + 1), ml_model, circuito) for _ in range(10000)]
+        # ==========================================
+        
         totais = np.array([s[0] for s in sims])
         diffs = np.array([s[1] for s in sims])
         p1_sets_ganhos = np.array([s[2] for s in sims])
