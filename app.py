@@ -29,30 +29,40 @@ def get_elo(nome_jogador, superficie):
     return float(match[col].values[0])
 
 def simulate_match(elo_p1, elo_p2, sets_to_win):
-    # 1. Conversão de Elo para Probabilidade (Logistic Curve)
-    diff = (elo_p1 - elo_p2) / 400
-    prob_p1_base = 1 / (1 + 10**(-diff))
+    # CORREÇÃO CRÍTICA: Mapeamento de Elo para a probabilidade de GAME
+    elo_diff = elo_p1 - elo_p2
     
-    # 2. CALIBRAÇÃO DE REALISMO (O segredo do mercado)
-    # Em vez de 100% de precisão no Elo, introduzimos a 'Incerteza do Jogador'
-    # O ténis tem uma volatilidade alta; um favorito nunca ganha mais de 85-90% das vezes.
-    ruido = np.random.normal(0, 0.08)  # Desvio padrão de 8% nos pontos
-    prob_p1 = np.clip(prob_p1_base + ruido, 0.05, 0.95)
+    # 100 pontos de Elo de diferença representam um aumento de ~3.3% na 
+    # probabilidade de ganhar um game de serviço (fator de escala = 3000).
+    game_prob_shift = elo_diff / 3000 
+    
+    # Probabilidade de cada jogador confirmar o seu próprio serviço (Hold %)
+    # Base ATP é ~78% (0.78)
+    p1_hold_prob = np.clip(0.78 + game_prob_shift, 0.40, 0.95)
+    p2_hold_prob = np.clip(0.78 - game_prob_shift, 0.40, 0.95)
     
     p1_sets, p2_sets = 0, 0
     total_g, diff_g = 0, 0
     
     while p1_sets < sets_to_win and p2_sets < sets_to_win:
-        # Simulação de cada SET
         p1_g, p2_g = 0, 0
         while (p1_g < 6 and p2_g < 6) or abs(p1_g - p2_g) < 2:
-            # Probabilidade de ganhar um game no set
-            # A vantagem do serviço é importante: ~55-60% para o servidor
-            prob_game = prob_p1 + (0.05 if (p1_g + p2_g) % 2 == 0 else -0.05)
-            if np.random.random() < prob_game:
+            # Lógica de Serviço: Os jogadores alternam o serviço a cada game
+            # P1 serve nos games pares (0, 2, 4...) do set
+            if (p1_g + p2_g) % 2 == 0:
+                prob_p1_wins_game = p1_hold_prob
+            else:
+                # Se o P2 serve, a probabilidade do P1 ganhar (fazer break) é o inverso
+                prob_p1_wins_game = 1 - p2_hold_prob
+            
+            # Adiciona um pequeno ruído de 2% para simular a variância do encontro
+            prob_p1_wins_game += np.random.normal(0, 0.02)
+            
+            if np.random.random() < prob_p1_wins_game:
                 p1_g += 1
             else:
                 p2_g += 1
+                
             if p1_g == 7 or p2_g == 7: break
             
         total_g += (p1_g + p2_g)
@@ -61,7 +71,6 @@ def simulate_match(elo_p1, elo_p2, sets_to_win):
         else: p2_sets += 1
         
     return total_g, diff_g, (1 if p1_sets > p2_sets else 0)
-
 # --- INTERFACE ---
 superficie = st.sidebar.selectbox("Superfície", sorted(df['surface'].dropna().unique()))
 df_filtrado = df[df['surface'] == superficie]
