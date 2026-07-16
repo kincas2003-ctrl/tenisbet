@@ -712,15 +712,37 @@ def load_agenda() -> pd.DataFrame:
     hoje = datetime.today().date()
     amanha = hoje + timedelta(days=1)
 
-    dados_fallback = {
-        "Torneio": ["ATP Challenger Amersfoort", "ATP Challenger Amersfoort", "WTA Palermo", "WTA Palermo"],
-        "Data": [hoje, hoje, hoje, amanha],
-        "Hora": ["14:00", "15:30", "16:00", "10:00"],
-        "P1": ["Jesper De Jong", "Jaime Faria", "Qinwen Zheng", "Karolina Muchova"],
-        "P2": ["Sebastian Baez", "Titouan Droguet", "Sara Errani", "Qinwen Zheng"],
-    }
+    jogos = [
+    # ATP - Bastad (Suécia), terra batida
+    {"Circuito": "ATP", "Torneio": "Bastad (Suécia)", "Superficie": "Terra batida", "Hora": "10:00", "P1": "Vallejo D.", "P2": "Travaglia S.", "Status": ""},
+    {"Circuito": "ATP", "Torneio": "Bastad (Suécia)", "Superficie": "Terra batida", "Hora": "11:30", "P1": "Borges N.", "P2": "Darderi L.", "Status": ""},
+    {"Circuito": "ATP", "Torneio": "Bastad (Suécia)", "Superficie": "Terra batida", "Hora": "13:00", "P1": "Rublev A.", "P2": "Baez S.", "Status": ""},
+    {"Circuito": "ATP", "Torneio": "Bastad (Suécia)", "Superficie": "Terra batida", "Hora": "14:30", "P1": "Tabilo A.", "P2": "Tirante T. A.", "Status": ""},
 
-    return pd.DataFrame(dados_fallback)
+    # ATP - Gstaad (Suíça), terra batida
+    {"Circuito": "ATP", "Torneio": "Gstaad (Suíça)", "Superficie": "Terra batida", "Hora": "09:30", "P1": "Collignon R.", "P2": "Vacherot V.", "Status": ""},
+    {"Circuito": "ATP", "Torneio": "Gstaad (Suíça)", "Superficie": "Terra batida", "Hora": "", "P1": "Bublik A.", "P2": "Halys Q.", "Status": "Suspended"},
+    {"Circuito": "ATP", "Torneio": "Gstaad (Suíça)", "Superficie": "Terra batida", "Hora": "", "P1": "Shevchenko A.", "P2": "Stricker D.", "Status": "Suspended"},
+    {"Circuito": "ATP", "Torneio": "Gstaad (Suíça)", "Superficie": "Terra batida", "Hora": "12:30", "P1": "Cerundolo J. M.", "P2": "Ruud C.", "Status": ""},
+    {"Circuito": "ATP", "Torneio": "Gstaad (Suíça)", "Superficie": "Terra batida", "Hora": "16:30", "P1": "Rinderknech A.", "P2": "Tsitsipas S.", "Status": ""},
+
+    # ATP - Umag (Croácia), terra batida
+    {"Circuito": "ATP", "Torneio": "Umag (Croácia)", "Superficie": "Terra batida", "Hora": "09:00", "P1": "Burruchaga R. A.", "P2": "Merida Aguilar D.", "Status": ""},
+
+    # WTA - Athens (Grécia), piso duro
+    {"Circuito": "WTA", "Torneio": "Athens (Grécia)", "Superficie": "Piso duro", "Hora": "15:30", "P1": "Krejcikova B.", "P2": "Zheng Q.", "Status": ""},
+    {"Circuito": "WTA", "Torneio": "Athens (Grécia)", "Superficie": "Piso duro", "Hora": "15:30", "P1": "Valentova T.", "P2": "Korneeva A.", "Status": ""},
+    {"Circuito": "WTA", "Torneio": "Athens (Grécia)", "Superficie": "Piso duro", "Hora": "17:30", "P1": "Parks A.", "P2": "Sakkari M.", "Status": ""},
+    {"Circuito": "WTA", "Torneio": "Athens (Grécia)", "Superficie": "Piso duro", "Hora": "19:00", "P1": "Tauson C.", "P2": "Bejlek S.", "Status": ""},
+
+    # WTA - Iasi (Roménia), terra batida
+    {"Circuito": "WTA", "Torneio": "Iasi (Roménia)", "Superficie": "Terra batida", "Hora": "11:00", "P1": "Putintseva Y.", "P2": "Sherif M.", "Status": ""},
+    {"Circuito": "WTA", "Torneio": "Iasi (Roménia)", "Superficie": "Terra batida", "Hora": "12:30", "P1": "Oliynykova O.", "P2": "Burel C.", "Status": ""},
+    {"Circuito": "WTA", "Torneio": "Iasi (Roménia)", "Superficie": "Terra batida", "Hora": "15:30", "P1": "Udvardy P.", "P2": "Badosa P.", "Status": ""},
+    {"Circuito": "WTA", "Torneio": "Iasi (Roménia)", "Superficie": "Terra batida", "Hora": "17:00", "P1": "Zidansek T.", "P2": "Marcinko P.", "Status": ""},
+]
+
+dados_fallback = pd.DataFrame(jogos)
 
 
 def _fuzzy_match(name: str, choices: List[str], threshold: float = 85.0) -> str:
@@ -1394,39 +1416,52 @@ agenda = load_agenda()
 if agenda.empty:
     st.info("Não há jogos na agenda.")
 else:
-    # Ordena por data e hora, mas mostra TUDO, sem filtrar por hoje
-    if "Data" in agenda.columns:
-        agenda = agenda.sort_values(by=["Data", "Hora"] if "Hora" in agenda.columns else ["Data"])
+    circuitos_disponiveis = sorted(agenda["Circuito"].dropna().unique()) if "Circuito" in agenda.columns else []
 
-    torneios_disponiveis = sorted(agenda["Torneio"].dropna().unique()) if "Torneio" in agenda.columns else []
-
-    # Filtro opcional por torneio, mas por defeito mostra TODOS
-    torneio_filtro = st.multiselect(
-        "Filtrar por torneio (deixa vazio para ver tudo)",
-        torneios_disponiveis,
+    circuito_filtro = st.multiselect(
+        "Filtrar por circuito (deixa vazio para ver tudo)",
+        circuitos_disponiveis,
         default=[]
     )
 
     agenda_visivel = agenda.copy()
-    if torneio_filtro:
-        agenda_visivel = agenda_visivel[agenda_visivel["Torneio"].isin(torneio_filtro)]
+    if circuito_filtro:
+        agenda_visivel = agenda_visivel[agenda_visivel["Circuito"].isin(circuito_filtro)]
 
-    st.dataframe(agenda_visivel, use_container_width=True, hide_index=True)
+    opcoes_jogo = []
 
-    # Seleção de jogo para simular
-    if not agenda_visivel.empty:
-        opcoes_jogo = [
-    f"{row['P1']} vs {row['P2']} - {row['Torneio']} ({row['Data']})" 
-    for index, row in agenda_visivel.iterrows()
-]
+    for circuito_nome in agenda_visivel["Circuito"].unique():
+        st.markdown(f"### {circuito_nome} - Individuais")
 
-jogo_escolhido = st.selectbox("Selecionar jogo para simular", opcoes_jogo)
+        df_circuito = agenda_visivel[agenda_visivel["Circuito"] == circuito_nome]
 
-idx = opcoes_jogo.index(jogo_escolhido)
-linha_escolhida = agenda_visivel.iloc[idx]
+        for torneio_nome in df_circuito["Torneio"].unique():
+            df_torneio = df_circuito[df_circuito["Torneio"] == torneio_nome]
+            superficie = df_torneio["Superficie"].iloc[0] if "Superficie" in df_torneio.columns else ""
 
-st.session_state["agenda_p1"] = linha_escolhida["P1"]
-st.session_state["agenda_p2"] = linha_escolhida["P2"]
+            st.markdown(f"{torneio_nome}, {superficie}")
+
+            for _, row in df_torneio.iterrows():
+                status = row.get("Status", "")
+                hora = row["Hora"] if row["Hora"] else ""
+
+                if status:
+                    st.text(f"{row['P1']} vs {row['P2']} — {status}")
+                else:
+                    st.text(f"{hora}  {row['P1']} vs {row['P2']}")
+
+                opcoes_jogo.append(f"{row['P1']} vs {row['P2']} - {torneio_nome}")
+
+    st.divider()
+
+    if opcoes_jogo:
+        jogo_escolhido = st.selectbox("Selecionar jogo para simular", opcoes_jogo)
+
+        idx = opcoes_jogo.index(jogo_escolhido)
+        linha_escolhida = agenda_visivel.iloc[idx]
+
+        st.session_state["agenda_p1"] = linha_escolhida["P1"]
+        st.session_state["agenda_p2"] = linha_escolhida["P2"]
 with tab_live:
     st.header("📡 Radar de Valor em Tempo Real")
     st.markdown("O sistema varre dezenas de casas de apostas de uma vez, pega na **melhor odd do mercado** para cada jogador, e cruza-a com o teu modelo matemático.")
