@@ -120,6 +120,7 @@ class PlayerStats:
     fatigue: float
     recent_form: float
     ace_rate_100: Optional[float] = None  
+    hold_std: float = MODEL.noise_std  # NOVO: Variância individual  
 
 
 @dataclass
@@ -216,6 +217,8 @@ def _sim_set(
     n: int,
     p1h: Union[float, np.ndarray],
     p2h: Union[float, np.ndarray],
+    std1: float,           # NOVO
+    std2: float,           # NOVO
     rng: np.random.Generator,
 ) -> Tuple[np.ndarray, np.ndarray]:
     g1 = np.zeros(n, dtype=np.int32)
@@ -226,7 +229,11 @@ def _sim_set(
         if not active.any():
             break
         base_p = p1h if (game_idx % 2 == 0) else (1.0 - p2h)
-        probs = np.clip(base_p + rng.normal(0, MODEL.noise_std, n), 0.0, 1.0)
+        
+        # O ruído agora depende de quem está a servir!
+        current_std = std1 if (game_idx % 2 == 0) else std2
+        probs = np.clip(base_p + rng.normal(0, current_std, n), 0.0, 1.0)
+        
         p1_wins = rng.random(n) < probs
         g1 += active & p1_wins
         g2 += active & ~p1_wins
@@ -281,7 +288,7 @@ def simulate(setup: MatchSetup, n: int = MODEL.monte_carlo_n) -> dict:
             cur_p1h = _apply_momentum(p1h, won_prev_p1, MODEL.momentum_boost)
             cur_p2h = _apply_momentum(p2h, ~won_prev_p1, MODEL.momentum_boost)
 
-        g1, g2 = _sim_set(n, cur_p1h, cur_p2h, rng)
+       g1, g2 = _sim_set(n, cur_p1h, cur_p2h, setup.p1.hold_std, setup.p2.hold_std, rng)
         games_in_set = g1 + g2
 
         srv1 = (games_in_set + 1) // 2
@@ -322,13 +329,14 @@ def simulate(setup: MatchSetup, n: int = MODEL.monte_carlo_n) -> dict:
 # SECÇÃO 3 — MERCADOS (EV e Kelly)
 # ============================================================================
 
-@dataclass
+@@dataclass
 class Bet:
     market: str
     prob: float
     odd: float
     ev: float
     kelly: float
+    market_fair_prob: float = 0.0  # NOVO: Probabilidade verdadeira estimada da casa
 
     @property
     def fair_odd(self) -> float:
@@ -339,6 +347,42 @@ class Bet:
         return float(np.clip(self.kelly, MODEL.kelly_min, MODEL.kelly_max))
 
 
+def _devig_probs(odd1: float, odd2: float) -> Tuple[float, float]:
+    """Calcula a probabilidade justa da casa removendo o overround (margin)."""
+    if odd1 <= 1.0 or odd2 <= 1.0:
+        return (0.0, 0.0)
+    implied1, implied2 = 1.0 / odd1, 1.0 / odd2
+    margin = implied1 + implied2 - 1.0
+    if margin > 0:
+        return (implied1 / (1.0 + margin), implied2 / (1.0 + margin))
+    return (implied1, implied2)
+
+
+def optimize_portfolio(bets: List[Bet], max_exposure: float = MODEL.kelly_max * 1.5) -> List[Bet]:
+    """
+    Previne exposição excessiva filtrando apostas correlacionadas.
+    Ex: Não aposta no P1 Vencer e no P1 Handicap em simultâneo. Fica só com a de melhor Kelly.
+    """
+    sorted_bets = sorted([b for b in bets if b.ev > 0], key=lambda b: b.kelly, reverse=True)
+    portfolio = []
+    current_exposure = 0.0
+    lados_cobertos = set()
+    
+    for b in sorted_bets:
+        # Define a categoria para evitar dependências colineares
+        if any(x in b.market for x in ["P1", "Jogador 1"]): cat = "Lado_P1"
+        elif any(x in b.market for x in ["P2", "Jogador 2"]): cat = "Lado_P2"
+        else: cat = "Totais_O/U"
+              
+        if cat in lados_cobertos and cat != "Totais_O/U":
+            continue # Já temos a melhor aposta para este jogador, ignorar redundâncias
+            
+        if current_exposure + b.stake_pct <= max_exposure:
+            portfolio.append(b)
+            current_exposure += b.stake_pct
+            lados_cobertos.add(cat)
+            
+    return portfolio
 def _kelly(prob: float, odd: float) -> float:
     if odd <= 1.0 or prob <= 0:
         return 0.0
@@ -722,9 +766,24 @@ def get_stats(nome: str, superficie: str, circuito: str, df: pd.DataFrame, df_el
             weights_arr = np.array(weights)
             wins_arr = np.array(wins)
             form = float(np.sum(weights_arr * wins_arr) / np.sum(weights_arr))
+# --- Modelação da Variância Individual (Hold STD) ---
+    hold_std = MODEL.noise_std
+    if "_pn" in df.columns and "hold_percentage" in df.columns:
+        m_all = df[df["_pn"] == nn]
+        if len(m_all) >= 10:  # Precisamos de uma amostra mínima para ter variância real
+            std_real = float(m_all["hold_percentage"].std())
+            if pd.notna(std_real):
+                # Limita entre 1% (incrivelmente sólido) e 4% (extremamente errático)
+                hold_std = float(np.clip(std_real, 0.01, 0.04))
 
-    return PlayerStats(elo=elo, hold_rate=hold, fatigue=fatigue, recent_form=form, ace_rate_100=ace_rate_100)
-
+    return PlayerStats(
+        elo=elo, 
+        hold_rate=hold, 
+        fatigue=fatigue, 
+        recent_form=form, 
+        ace_rate_100=ace_rate_100, 
+        hold_std=hold_std # Variável adicionada aqui
+    )
 
 def get_h2h(p1: str, p2: str, df: pd.DataFrame) -> Tuple[int, int]:
     if "_pn" not in df.columns or "_on" not in df.columns:
@@ -900,38 +959,49 @@ def render_results(bets: List[Bet], p1: str, p2: str, sims: dict) -> None:
         st.error("Não foram encontrados mercados. Verifica a formatação do texto.")
         return
 
-    top = best_bet(bets, limite_ev, odd_minima_rec)
-    if top:
+    # Filtra apenas apostas que atingem os critérios mínimos
+    eligible_bets = [b for b in bets if b.ev >= limite_ev and b.odd >= odd_minima_rec]
+    
+    # Aplica o filtro Correlacionado para construir um "Portfólio" de risco gerido
+    portfolio = optimize_portfolio(eligible_bets)
+
+    if portfolio:
         st.markdown("---")
-        st.markdown("### 🏆 Aposta Recomendada")
-        st.success(
-            f"**Mercado:** {top.market}\n\n"
-            f"**Odd:** {top.odd:.2f} | **Prob:** {top.prob:.1%} | "
-            f"**EV:** {'+' if top.ev > 0 else ''}{top.ev:.1%}\n\n"
-            f"⚖️ **Banca Sugerida:** **{top.stake_pct:.1%}**"
-        )
+        st.markdown("### 🏆 Portfólio de Jogo Recomendado (Risco Gerido)")
+        
+        cols = st.columns(len(portfolio))
+        total_stake = 0.0
+        
+        for i, bet in enumerate(portfolio):
+            total_stake += bet.stake_pct
+            cols[i].success(
+                f"**{bet.market}**\n\n"
+                f"Odd: `{bet.odd:.2f}` | Prob: `{bet.prob:.1%}`\n\n"
+                f"📈 EV: `+{bet.ev:.1%}` | ⚖️ Stake: **{bet.stake_pct:.1%}**"
+            )
+            
+        st.caption(f"**Exposição Total no Jogo:** {total_stake:.1%} da Banca")
         st.markdown("---")
 
+    # Tabela Completa
     rows = [{
-        "Status":    "✅ Valor" if b.ev >= limite_ev else "❌ Evitar",
+        "Status":    "✅ Selecionada" if b in portfolio else ("🔄 Valor Redundante" if b.ev >= limite_ev else "❌ Evitar"),
         "Mercado":   b.market,
         "Odd":       f"{b.odd:.2f}",
         "Odd Justa": f"{b.fair_odd:.2f}",
         "Prob":      f"{b.prob:.2%}",
         "EV":        f"{'+' if b.ev > 0 else ''}{b.ev:.2%}",
     } for b in bets]
+    
     st.markdown("#### 📋 Auditoria Completa")
     st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
     with st.expander("🔬 Parâmetros do Modelo"):
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4)
         c1.metric("Prob. Vitória P1",      f"{np.mean(sims['p1_match_wins']):.1%}")
-        c2.metric("P1 Hold Rate",           f"{sims['p1_hold']:.1%}")
-        c3.metric("P2 Hold Rate",           f"{sims['p2_hold']:.1%}")
-        c1.metric("Média Total Jogos",      f"{np.mean(sims['total_games']):.1f}")
-        c2.metric("Mediana Aces",           f"{np.median(sims['aces_p1'] + sims['aces_p2']):.1f}")
-        c3.metric("Prob P1 Vence 1º Set",   f"{np.mean(sims['s1_p1'] > sims['s1_p2']):.1%}")
-
+        c2.metric("P1 Hold Rate",          f"{sims['p1_hold']:.1%}")
+        c3.metric("P2 Hold Rate",          f"{sims['p2_hold']:.1%}")
+        c4.metric("Desvio Padrão Volatilidade", f"P1: {sims.get('p1_std', 'N/A')} | P2: {sims.get('p2_std', 'N/A')}")
 
 tab_agenda, tab_scanner, tab_manual, tab_csv, tab_calib = st.tabs(
     ["📅 Agenda", "🤖 Auto-Scanner", "🔍 Calculadora Manual", "🚀 CSV em Massa", "📉 Calibração"]
