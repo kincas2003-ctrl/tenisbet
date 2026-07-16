@@ -1172,9 +1172,9 @@ st.sidebar.header("2. Filtros de Valor")
 limite_ev      = st.sidebar.slider("EV Mínimo (%)", 1.0, 15.0, 5.0, 0.5) / 100
 odd_minima_rec = st.sidebar.number_input("Odd Mínima Recomendada", value=1.50, step=0.05)
 st.sidebar.header("🔄 Pipeline de Dados (Data Center)")
-st.sidebar.markdown("Arrasta múltiplos ficheiros CSV para fundir anos de histórico.")
+st.sidebar.markdown(f"Os teus ficheiros ficam guardados localmente na pasta `{PASTA_DADOS}`.")
 
-# 1. Opções de Processamento configuráveis pelo utilizador
+# Opções de Processamento configuráveis
 opcoes_pipeline = st.sidebar.multiselect(
     "Opções de Cálculo a aplicar:",
     [
@@ -1189,77 +1189,66 @@ opcoes_pipeline = st.sidebar.multiselect(
 )
 
 @st.cache_data(show_spinner=False)
-def process_multiple_csvs(files, opcoes) -> pd.DataFrame:
+def process_multiple_csvs(file_paths, opcoes) -> pd.DataFrame:
+    """Lê os ficheiros DIRETAMENTE do disco rígido em vez da memória temporária."""
     dfs = []
-    for file in files:
+    for path in file_paths:
         try:
-            df_temp = pd.read_csv(file)
+            df_temp = pd.read_csv(path)
             df_temp.columns = [str(c).lower().strip() for c in df_temp.columns]
             
-            # Opção A: Normalizar nomes (Essencial para o Fuzzy Match funcionar bem)
             if "Normalizar Nomes (Fuzzy/Minúsculas)" in opcoes:
                 for col, norm in [("winner_name", "_wn"), ("loser_name", "_on")]:
                     if col in df_temp.columns:
                         df_temp[norm] = df_temp[col].astype(str).str.casefold().str.strip()
             
-            # Opção B: Cálculos Avançados de Serviço
             if "Calcular Hold/Break Rates (Estatísticas de Serviço)" in opcoes:
                 if "w_svgms" in df_temp.columns:
-                    # Proteção contra divisão por zero
                     df_temp["w_svgms"] = df_temp["w_svgms"].replace(0, np.nan)
                     df_temp["l_svgms"] = df_temp["l_svgms"].replace(0, np.nan)
-                    
                     df_temp["w_hold_pct"] = (df_temp["w_svgms"] - df_temp.get("l_bpconverted", 0)) / df_temp["w_svgms"]
                     df_temp["l_hold_pct"] = (df_temp["l_svgms"] - df_temp.get("w_bpconverted", 0)) / df_temp["l_svgms"]
             
-            # Opção C: Limpeza de Lixo Estatístico
             if "Remover Jogos Incompletos (Retiradas/Walkovers)" in opcoes:
                 if "score" in df_temp.columns:
                     df_temp = df_temp[~df_temp["score"].astype(str).str.contains("RET|W/O", na=False)]
             
             dfs.append(df_temp)
         except Exception as e:
-            st.sidebar.error(f"Erro ao processar {file.name}: {e}")
+            st.sidebar.error(f"Erro ao processar {path}: {e}")
             
-    # Fundir todos os ficheiros (ex: 2023 + 2024) num único DataFrame gigante
     if dfs:
         return pd.concat(dfs, ignore_index=True)
     return pd.DataFrame()
 
-# 2. Upload de Múltiplos Ficheiros
+# 2. Upload para gravar no disco
 ficheiros_upload = st.sidebar.file_uploader(
-    "Carregar CSVs (Sackmann)", 
+    "Adicionar NOVOS ficheiros ao arquivo", 
     type=["csv"], 
-    accept_multiple_files=True # A magia acontece aqui!
+    accept_multiple_files=True
 )
 
 if ficheiros_upload:
-    if st.sidebar.button("Executar Pipeline 🚀", type="primary"):
-        with st.spinner(f"A fundir e processar {len(ficheiros_upload)} ficheiro(s)..."):
-            df_live = process_multiple_csvs(ficheiros_upload, opcoes_pipeline)
+    for f in ficheiros_upload:
+        # Gravar fisicamente no teu disco
+        caminho_destino = os.path.join(PASTA_DADOS, f.name)
+        with open(caminho_destino, "wb") as f_out:
+            f_out.write(f.getbuffer())
+    st.sidebar.success(f"✅ {len(ficheiros_upload)} ficheiros guardados permanentemente!")
+
+# 3. Descobrir o que já está guardado na pasta
+ficheiros_locais = [os.path.join(PASTA_DADOS, f) for f in os.listdir(PASTA_DADOS) if f.endswith('.csv')]
+
+if ficheiros_locais:
+    st.sidebar.info(f"📂 Encontrados {len(ficheiros_locais)} ficheiros no teu arquivo local.")
+    
+    if st.sidebar.button("Carregar Dados do Arquivo 🚀", type="primary"):
+        with st.spinner(f"A processar {len(ficheiros_locais)} ficheiro(s) do disco..."):
+            df_live = process_multiple_csvs(ficheiros_locais, opcoes_pipeline)
             st.sidebar.success(f"✅ {len(df_live)} encontros injetados no motor com sucesso!")
 else:
-    df_live = pd.DataFrame() # Fallback seguro
-
-ficheiro_upload = st.sidebar.file_uploader("Carregar atp_matches_XXXX.csv", type=["csv"])
-
-if ficheiro_upload is not None:
-    with st.spinner("A injetar novos dados no motor matemático..."):
-        df_live = process_sackmann_csv(ficheiro_upload)
-        st.sidebar.success(f"✅ {len(df_live)} encontros injetados e processados!")
-else:
-    df_live = pd.DataFrame() # Usa os dados locais se não houver upload
-st.sidebar.header("⚙️ Condições de Jogo")
-vel_campo     = st.sidebar.selectbox("Velocidade do Campo", list(SURFACE_MOD.keys()))
-ajuste_forma  = st.sidebar.slider("Ajuste de Forma (P1 vs P2)", -5, 5, 0)
-ajuste_fadiga = st.sidebar.slider("Ajuste de Fadiga (P1 vs P2)", -5, 5, 0)
-ajuste_contexto = st.sidebar.slider(
-    "Ajuste de Contexto (Altitude/Torneio/Jet Lag)", -5, 5, 0,
-    help=(
-        "Proxy manual para efeitos ainda não modelados com dados dedicados."
-    ),
-)
-
+    df_live = pd.DataFrame()
+    st.sidebar.warning("O teu arquivo local está vazio. Faz upload do primeiro CSV.")
 
 def safe_idx(name, fallback=0) -> int:
     try:
