@@ -1453,13 +1453,13 @@ else:
 default_p2 = st.session_state.get("agenda_p2")
 
 if default_p1:
-    nome_corrigido_p1 = fuzzy_match_name(default_p1, jogadores)
+    nome_corrigido_p1 = fuzzy_match_name(name: str, choices: list, threshold: float = 85.0)
     index_p1 = jogadores.index(nome_corrigido_p1) if nome_corrigido_p1 in jogadores else 0
 else:
     index_p1 = 0
 
 if default_p2:
-    nome_corrigido_p2 = fuzzy_match_name(default_p2, jogadores)
+    nome_corrigido_p2 = fuzzy_match_name(name: str, choices: list, threshold: float = 85.0)
     index_p2 = jogadores.index(nome_corrigido_p2) if nome_corrigido_p2 in jogadores else 0
 else:
     index_p2 = 0
