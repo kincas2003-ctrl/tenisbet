@@ -1449,8 +1449,23 @@ else:
         idx = opcoes_jogo.index(jogo_escolhido)
         linha_escolhida = agenda_visivel.iloc[idx]
 
-        st.session_state["agenda_p1"] = linha_escolhida["P1"]
-        st.session_state["agenda_p2"] = linha_escolhida["P2"]
+        default_p1 = st.session_state.get("agenda_p1")
+default_p2 = st.session_state.get("agenda_p2")
+
+if default_p1:
+    nome_corrigido_p1 = fuzzy_match_name(default_p1, jogadores)
+    index_p1 = jogadores.index(nome_corrigido_p1) if nome_corrigido_p1 in jogadores else 0
+else:
+    index_p1 = 0
+
+if default_p2:
+    nome_corrigido_p2 = fuzzy_match_name(default_p2, jogadores)
+    index_p2 = jogadores.index(nome_corrigido_p2) if nome_corrigido_p2 in jogadores else 0
+else:
+    index_p2 = 0
+
+p1 = st.sidebar.selectbox("Jogador 1", jogadores, index=index_p1)
+p2 = st.sidebar.selectbox("Jogador 2", jogadores, index=index_p2)
 with tab_live:
     st.header("📡 Radar de Valor em Tempo Real")
     st.markdown("O sistema varre dezenas de casas de apostas de uma vez, pega na **melhor odd do mercado** para cada jogador, e cruza-a com o teu modelo matemático.")
