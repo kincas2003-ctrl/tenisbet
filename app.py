@@ -709,40 +709,28 @@ def load_agenda() -> pd.DataFrame:
         except Exception as e:
             logging.error(f"Erro ao carregar agenda.csv: {e}")
 
-    hoje = datetime.today().date()
-    amanha = hoje + timedelta(days=1)
-
     jogos = [
-    # ATP - Bastad (Suécia), terra batida
-    {"Circuito": "ATP", "Torneio": "Bastad (Suécia)", "Superficie": "Terra batida", "Hora": "10:00", "P1": "Vallejo D.", "P2": "Travaglia S.", "Status": ""},
-    {"Circuito": "ATP", "Torneio": "Bastad (Suécia)", "Superficie": "Terra batida", "Hora": "11:30", "P1": "Borges N.", "P2": "Darderi L.", "Status": ""},
-    {"Circuito": "ATP", "Torneio": "Bastad (Suécia)", "Superficie": "Terra batida", "Hora": "13:00", "P1": "Rublev A.", "P2": "Baez S.", "Status": ""},
-    {"Circuito": "ATP", "Torneio": "Bastad (Suécia)", "Superficie": "Terra batida", "Hora": "14:30", "P1": "Tabilo A.", "P2": "Tirante T. A.", "Status": ""},
+        {"Circuito": "ATP", "Torneio": "Bastad (Suécia)", "Superficie": "Terra batida", "Hora": "10:00", "P1": "Vallejo D.", "P2": "Travaglia S.", "Status": ""},
+        {"Circuito": "ATP", "Torneio": "Bastad (Suécia)", "Superficie": "Terra batida", "Hora": "11:30", "P1": "Borges N.", "P2": "Darderi L.", "Status": ""},
+        {"Circuito": "ATP", "Torneio": "Bastad (Suécia)", "Superficie": "Terra batida", "Hora": "13:00", "P1": "Rublev A.", "P2": "Baez S.", "Status": ""},
+        {"Circuito": "ATP", "Torneio": "Bastad (Suécia)", "Superficie": "Terra batida", "Hora": "14:30", "P1": "Tabilo A.", "P2": "Tirante T. A.", "Status": ""},
+        {"Circuito": "ATP", "Torneio": "Gstaad (Suíça)", "Superficie": "Terra batida", "Hora": "09:30", "P1": "Collignon R.", "P2": "Vacherot V.", "Status": ""},
+        {"Circuito": "ATP", "Torneio": "Gstaad (Suíça)", "Superficie": "Terra batida", "Hora": "", "P1": "Bublik A.", "P2": "Halys Q.", "Status": "Suspended"},
+        {"Circuito": "ATP", "Torneio": "Gstaad (Suíça)", "Superficie": "Terra batida", "Hora": "", "P1": "Shevchenko A.", "P2": "Stricker D.", "Status": "Suspended"},
+        {"Circuito": "ATP", "Torneio": "Gstaad (Suíça)", "Superficie": "Terra batida", "Hora": "12:30", "P1": "Cerundolo J. M.", "P2": "Ruud C.", "Status": ""},
+        {"Circuito": "ATP", "Torneio": "Gstaad (Suíça)", "Superficie": "Terra batida", "Hora": "16:30", "P1": "Rinderknech A.", "P2": "Tsitsipas S.", "Status": ""},
+        {"Circuito": "ATP", "Torneio": "Umag (Croácia)", "Superficie": "Terra batida", "Hora": "09:00", "P1": "Burruchaga R. A.", "P2": "Merida Aguilar D.", "Status": ""},
+        {"Circuito": "WTA", "Torneio": "Athens (Grécia)", "Superficie": "Piso duro", "Hora": "15:30", "P1": "Krejcikova B.", "P2": "Zheng Q.", "Status": ""},
+        {"Circuito": "WTA", "Torneio": "Athens (Grécia)", "Superficie": "Piso duro", "Hora": "15:30", "P1": "Valentova T.", "P2": "Korneeva A.", "Status": ""},
+        {"Circuito": "WTA", "Torneio": "Athens (Grécia)", "Superficie": "Piso duro", "Hora": "17:30", "P1": "Parks A.", "P2": "Sakkari M.", "Status": ""},
+        {"Circuito": "WTA", "Torneio": "Athens (Grécia)", "Superficie": "Piso duro", "Hora": "19:00", "P1": "Tauson C.", "P2": "Bejlek S.", "Status": ""},
+        {"Circuito": "WTA", "Torneio": "Iasi (Roménia)", "Superficie": "Terra batida", "Hora": "11:00", "P1": "Putintseva Y.", "P2": "Sherif M.", "Status": ""},
+        {"Circuito": "WTA", "Torneio": "Iasi (Roménia)", "Superficie": "Terra batida", "Hora": "12:30", "P1": "Oliynykova O.", "P2": "Burel C.", "Status": ""},
+        {"Circuito": "WTA", "Torneio": "Iasi (Roménia)", "Superficie": "Terra batida", "Hora": "15:30", "P1": "Udvardy P.", "P2": "Badosa P.", "Status": ""},
+        {"Circuito": "WTA", "Torneio": "Iasi (Roménia)", "Superficie": "Terra batida", "Hora": "17:00", "P1": "Zidansek T.", "P2": "Marcinko P.", "Status": ""},
+    ]
 
-    # ATP - Gstaad (Suíça), terra batida
-    {"Circuito": "ATP", "Torneio": "Gstaad (Suíça)", "Superficie": "Terra batida", "Hora": "09:30", "P1": "Collignon R.", "P2": "Vacherot V.", "Status": ""},
-    {"Circuito": "ATP", "Torneio": "Gstaad (Suíça)", "Superficie": "Terra batida", "Hora": "", "P1": "Bublik A.", "P2": "Halys Q.", "Status": "Suspended"},
-    {"Circuito": "ATP", "Torneio": "Gstaad (Suíça)", "Superficie": "Terra batida", "Hora": "", "P1": "Shevchenko A.", "P2": "Stricker D.", "Status": "Suspended"},
-    {"Circuito": "ATP", "Torneio": "Gstaad (Suíça)", "Superficie": "Terra batida", "Hora": "12:30", "P1": "Cerundolo J. M.", "P2": "Ruud C.", "Status": ""},
-    {"Circuito": "ATP", "Torneio": "Gstaad (Suíça)", "Superficie": "Terra batida", "Hora": "16:30", "P1": "Rinderknech A.", "P2": "Tsitsipas S.", "Status": ""},
-
-    # ATP - Umag (Croácia), terra batida
-    {"Circuito": "ATP", "Torneio": "Umag (Croácia)", "Superficie": "Terra batida", "Hora": "09:00", "P1": "Burruchaga R. A.", "P2": "Merida Aguilar D.", "Status": ""},
-
-    # WTA - Athens (Grécia), piso duro
-    {"Circuito": "WTA", "Torneio": "Athens (Grécia)", "Superficie": "Piso duro", "Hora": "15:30", "P1": "Krejcikova B.", "P2": "Zheng Q.", "Status": ""},
-    {"Circuito": "WTA", "Torneio": "Athens (Grécia)", "Superficie": "Piso duro", "Hora": "15:30", "P1": "Valentova T.", "P2": "Korneeva A.", "Status": ""},
-    {"Circuito": "WTA", "Torneio": "Athens (Grécia)", "Superficie": "Piso duro", "Hora": "17:30", "P1": "Parks A.", "P2": "Sakkari M.", "Status": ""},
-    {"Circuito": "WTA", "Torneio": "Athens (Grécia)", "Superficie": "Piso duro", "Hora": "19:00", "P1": "Tauson C.", "P2": "Bejlek S.", "Status": ""},
-
-    # WTA - Iasi (Roménia), terra batida
-    {"Circuito": "WTA", "Torneio": "Iasi (Roménia)", "Superficie": "Terra batida", "Hora": "11:00", "P1": "Putintseva Y.", "P2": "Sherif M.", "Status": ""},
-    {"Circuito": "WTA", "Torneio": "Iasi (Roménia)", "Superficie": "Terra batida", "Hora": "12:30", "P1": "Oliynykova O.", "P2": "Burel C.", "Status": ""},
-    {"Circuito": "WTA", "Torneio": "Iasi (Roménia)", "Superficie": "Terra batida", "Hora": "15:30", "P1": "Udvardy P.", "P2": "Badosa P.", "Status": ""},
-    {"Circuito": "WTA", "Torneio": "Iasi (Roménia)", "Superficie": "Terra batida", "Hora": "17:00", "P1": "Zidansek T.", "P2": "Marcinko P.", "Status": ""},
-]
-
-dados_fallback = pd.DataFrame(jogos)
+    dados_fallback = pd.DataFrame(jogos)
     return dados_fallback
 
 
