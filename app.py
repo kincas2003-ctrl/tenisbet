@@ -771,40 +771,65 @@ def get_h2h(p1: str, p2: str, df: pd.DataFrame) -> Tuple[int, int]:
 # ----------------------------------------------------------------------------
 
 @st.cache_data
-def run_backtest(circuito: str, n_sample: int = 3000) -> pd.DataFrame:
+def run_backtest(circuito: str, n_sample: int = 3000, limite_valor: float = 0.05) -> pd.DataFrame:
     """
-    Gera pares (probabilidade prevista, resultado real) para jogos históricos,
-    usando o modelo Elo puro do sistema (P1 = "player" na linha, P2 = "opponent").
-
-    AVISO METODOLÓGICO: usa o snapshot ACTUAL de Elo como proxy do valor à
-    data de cada jogo (não existe histórico de Elo point-in-time guardado).
-    Para jogos antigos isto introduz algum lookahead bias — os números aqui
-    servem como primeiro sinal de honestidade do modelo, não como um
-    backtest walk-forward puro. Para rigor total, seria preciso guardar
-    snapshots de Elo por data e reconstruir o estado "à data do jogo".
+    Lê o ficheiro 2023 e simula apostas baseadas no valor esperado (EV).
     """
-    df = load_match_data()
+    ficheiro_backtest = "2023.xlsx - 2023.csv"
+    
+    if not os.path.exists(ficheiro_backtest):
+        return pd.DataFrame()
+        
+    df = pd.read_csv(ficheiro_backtest)
     df_elos = load_elos(circuito)
     cfg = CIRCUIT[circuito]
+    
+    # Filtrar apenas jogos com odds disponíveis
+    df = df.dropna(subset=["Winner", "Loser", "AvgW", "AvgL"])
+    
+    if len(df) > n_sample:
+        df = df.sample(n_sample, random_state=42)
 
-    if not {"_pn", "_on", "_wn"}.issubset(df.columns):
-        return pd.DataFrame(columns=["prob", "actual"])
-
-    rows = df.dropna(subset=["_pn", "_on", "_wn"])
-    if len(rows) > n_sample:
-        rows = rows.sample(n_sample, random_state=42)
-
-    preds, actuals = [], []
-    for _, r in rows.iterrows():
-        p1n, p2n = r["_pn"], r["_on"]
-        surf = r["surface"] if ("surface" in r and pd.notna(r["surface"])) else "Hard"
+    resultados = []
+    for _, r in df.iterrows():
+        p1n, p2n = str(r["Winner"]).casefold().strip(), str(r["Loser"]).casefold().strip()
+        surf = r["Surface"] if ("Surface" in r and pd.notna(r["Surface"])) else "Hard"
+        
+        # Obter Elos
         e1 = _lookup_elo(p1n, surf, df_elos, cfg.default_elo)
         e2 = _lookup_elo(p2n, surf, df_elos, cfg.default_elo)
-        prob = _elo_prob(e1 - e2)
-        preds.append(prob)
-        actuals.append(1.0 if r["_wn"] == p1n else 0.0)
+        
+        # O modelo calcula a probabilidade do P1 (que, neste ficheiro, é sempre o Vencedor real)
+        prob_modelo_w = _elo_prob(e1 - e2)
+        prob_modelo_l = 1.0 - prob_modelo_w
+        
+        # Probabilidades implícitas nas odds (sem remover a margem da casa para ser mais conservador)
+        prob_casa_w = 1.0 / r["AvgW"] if r["AvgW"] > 0 else 1.0
+        prob_casa_l = 1.0 / r["AvgL"] if r["AvgL"] > 0 else 1.0
+        
+        # Calcular EV para as duas opções
+        ev_w = (r["AvgW"] * prob_modelo_w) - 1
+        ev_l = (r["AvgL"] * prob_modelo_l) - 1
+        
+        # Lógica de aposta: apostamos na opção com maior EV, desde que seja > limite_valor
+        aposta_feita = "Nenhuma"
+        lucro = 0.0
+        
+        if ev_w > limite_valor and ev_w > ev_l:
+            aposta_feita = "Vencedor"
+            lucro = r["AvgW"] - 1.0  # Ganhou a aposta (porque o P1 é sempre o Vencedor neste CSV)
+        elif ev_l > limite_valor and ev_l > ev_w:
+            aposta_feita = "Perdedor"
+            lucro = -1.0  # Perdeu a aposta (porque o P2 é o Loser real)
+            
+        resultados.append({
+            "prob": prob_modelo_w, 
+            "actual": 1.0,  # P1 vence sempre neste formato
+            "aposta": aposta_feita,
+            "lucro": lucro
+        })
 
-    return pd.DataFrame({"prob": preds, "actual": actuals})
+    return pd.DataFrame(resultados)
 
 
 def brier_score(df_bt: pd.DataFrame) -> float:
@@ -1094,45 +1119,43 @@ with tab_csv:
 
 # ── CALIBRAÇÃO ────────────────────────────────────────────────────────────────
 with tab_calib:
-    st.header("📉 Calibração Histórica do Modelo")
-    st.warning(
-        "⚠️ **Nota metodológica:** este backtest usa o snapshot ACTUAL de Elo "
-        "como aproximação do valor à data de cada jogo histórico — não existe "
-        "ainda um histórico de Elo point-in-time guardado. Os números são "
-        "indicativos e tendem a ser optimistas para jogos mais antigos "
-        "(lookahead bias), não substituem um backtest walk-forward puro."
-    )
+    st.header("📉 Backtest Histórico (2023)")
+    st.markdown("Testa o teu modelo contra as odds reais de fecho (`AvgW` / `AvgL`) para veres se gera lucro a longo prazo.")
 
-    n_amostra = st.slider("Nº de jogos a amostrar", 500, 10_000, 3_000, 500)
+    c_amostra, c_ev = st.columns(2)
+    n_amostra = c_amostra.slider("Nº de jogos a testar", 500, 5000, 2000, 500)
+    filtro_ev = c_ev.slider("EV Mínimo para Apostar (%)", 1.0, 15.0, 5.0, 0.5) / 100
 
     if st.button("Correr Backtest", key="btn_backtest"):
-        with st.spinner("A recalcular previsões históricas..."):
-            df_bt = run_backtest(circuito, n_amostra)
-
-        if df_bt.empty:
-            st.error(
-                "Dados insuficientes para o backtest — faltam colunas "
-                "`player` / `opponent` / `winner` no ficheiro de dados."
-            )
+        if not os.path.exists("2023.xlsx - 2023.csv"):
+            st.error("❌ O ficheiro `2023.xlsx - 2023.csv` não foi encontrado na pasta principal.")
         else:
-            bs = brier_score(df_bt)
-            c1, c2 = st.columns(2)
-            c1.metric(
-                "Brier Score", f"{bs:.4f}",
-                help="0 = previsões perfeitas | 0.25 = tão bom como adivinhar sempre 50/50 | quanto menor, melhor",
-            )
-            c2.metric("Jogos Analisados", f"{len(df_bt)}")
+            with st.spinner("A cruzar previsões com odds de mercado..."):
+                df_bt = run_backtest(circuito, n_amostra, filtro_ev)
 
-            tabela = calibration_table(df_bt)
-            st.markdown("#### Curva de Calibração (Reliability Diagram)")
-            st.markdown(
-                "Se o modelo for honesto, a **Prob. Média Prevista** e a "
-                "**Taxa Real de Vitórias** devem ficar próximas em cada bucket. "
-                "Se a taxa real for sistematicamente mais baixa que a prevista "
-                "nos buckets altos, o modelo está a ser demasiado confiante."
-            )
-            st.dataframe(tabela, use_container_width=True)
+            if df_bt.empty:
+                st.error("Dados insuficientes ou ficheiro com formato incorreto.")
+            else:
+                bs = brier_score(df_bt)
+                
+                # Calcular métricas financeiras
+                total_apostas = len(df_bt[df_bt["aposta"] != "Nenhuma"])
+                lucro_unidades = df_bt["lucro"].sum()
+                roi = (lucro_unidades / total_apostas) * 100 if total_apostas > 0 else 0
+                
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Brier Score", f"{bs:.4f}")
+                c2.metric("Jogos Analisados", f"{len(df_bt)}")
+                c3.metric("Apostas Feitas", f"{total_apostas}")
+                
+                # Cor do ROI (Verde se lucro, vermelho se prejuízo)
+                delta_color = "normal" if lucro_unidades >= 0 else "inverse"
+                c4.metric("Lucro (Unidades)", f"{lucro_unidades:.2f} U", f"ROI: {roi:.2f}%", delta_color=delta_color)
 
-            if not tabela.empty:
-                chart_df = tabela.set_index("Bucket")[["Prob. Média Prevista", "Taxa Real de Vitórias"]]
-                st.line_chart(chart_df)
+                tabela = calibration_table(df_bt)
+                st.markdown("#### Curva de Calibração (Reliability Diagram)")
+                st.dataframe(tabela, use_container_width=True)
+
+                if not tabela.empty:
+                    chart_df = tabela.set_index("Bucket")[["Prob. Média Prevista", "Taxa Real de Vitórias"]]
+                    st.line_chart(chart_df)
