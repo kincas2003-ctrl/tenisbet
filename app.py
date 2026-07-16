@@ -573,48 +573,60 @@ def parse_odds(text: str, p1: str = "", p2: str = "") -> dict:
 
     for raw in text.split("\n"):
         line = raw.strip()
-        if not line: continue
+        if not line:
+            continue
 
         parsed = _parse_line(line)
         if parsed is None:
             cat = _detect_cat(line.lower(), p1t, p2t)
             continue
 
-        if cat == "Ignored": continue
+        if cat == "Ignored":
+            continue
+
         key, odd = parsed
+        key = key.lower()
 
         has_combo = any(x in key for x in ["&", " and ", " e "])
-        if has_combo and cat in ("match_winner", "set1_winner", "set2_winner",
-                                  "total_games", "total_sets", "p1_total_games",
-                                  "p2_total_games", "set1_total_games", "set2_total_games"):
+        if has_combo and cat in (
+            "match_winner", "set1_winner", "set2_winner",
+            "total_games", "total_sets", "p1_total_games",
+            "p2_total_games", "set1_total_games", "set2_total_games"
+        ):
             continue
-        if cat in ("match_winner", "set1_winner", "set2_winner") and re.search(r"\b[02]:[012]\b", key):
+
+        if cat in ("match_winner", "set1_winner", "set2_winner") and re.search(r"\b[02][-:][012]\b", key):
             continue
 
         try:
             if cat in ("match_winner", "set1_winner", "set2_winner"):
-                is_p1 = any(x in key for x in p1t + ["casa", "home", "jogador 1"]) or re.search(r"(?<!\d)1(?!\d)", key)
-                is_p2 = any(x in key for x in p2t + ["fora", "away",  "jogador 2"]) or re.search(r"(?<!\d)2(?!\d)", key)
-                c = mkts[cat]
-                if is_p1 and "P1" not in c: c["P1"] = odd
-                elif is_p2 and "P2" not in c: c["P2"] = odd
+                is_p1 = any(x in key for x in p1t + ["casa", "home", "jogador 1", "player 1", "1"])
+                is_p2 = any(x in key for x in p2t + ["fora", "away", "jogador 2", "player 2", "2"])
 
-            elif cat in ("total_games", "total_sets", "p1_total_games", "p2_total_games",
-                         "set1_total_games", "set2_total_games", "total_aces", "p1_aces", "p2_aces"):
+                if is_p1 and "P1" not in mkts[cat]:
+                    mkts[cat]["P1"] = odd
+                elif is_p2 and "P2" not in mkts[cat]:
+                    mkts[cat]["P2"] = odd
+
+            elif cat in (
+                "total_games", "total_sets", "p1_total_games", "p2_total_games",
+                "set1_total_games", "set2_total_games", "total_aces", "p1_aces", "p2_aces"
+            ):
                 m = _RE_OU.search(key)
                 if m:
-                    ou = "Over" if m.group(1).lower() in ("over", "mais de", "mais", "acima") else "Under"
+                    ou = "Over" if m.group(1).lower() in ["over", "mais de", "mais", "acima"] else "Under"
                     val = float(m.group(2))
-                    target = "total_sets" if cat == "total_games" and val < 6.0 else cat
-                    if val not in mkts[target]: mkts[target][val] = {}
-                    mkts[target][val][ou] = odd
+                    if val not in mkts[cat]:
+                        mkts[cat][val] = {}
+                    mkts[cat][val][ou] = odd
 
             elif cat in ("game_handicap", "set_handicap", "set1_handicap", "set2_handicap"):
                 m = _RE_HCP.search(key)
                 if m:
                     hcp = float(m.group(1))
-                    side = "P1" if any(x in key for x in p1t + ["1", "casa", "jogador 1"]) else "P2"
+                    side = "P1" if any(x in key for x in p1t + ["1", "casa", "home", "jogador 1", "player 1"]) else "P2"
                     mkts[cat][side][hcp] = odd
+
         except Exception:
             continue
 
