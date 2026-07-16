@@ -1167,14 +1167,15 @@ sets_input  = st.sidebar.radio("Sets do Encontro", sets_padrao)
 jogadores = sorted(df_elos["Player"].dropna().unique()) if not df_elos.empty else ["Jogador A", "Jogador B"]
 if len(jogadores) < 2:
     st.sidebar.error("⚠️ Ficheiro de Elos vazio ou não encontrado.")
+# 1. Configurar a pasta física (Esta é a variável que estava a faltar!)
+PASTA_DADOS = "dados_historicos"
+if not os.path.exists(PASTA_DADOS):
+    os.makedirs(PASTA_DADOS)
 
-st.sidebar.header("2. Filtros de Valor")
-limite_ev      = st.sidebar.slider("EV Mínimo (%)", 1.0, 15.0, 5.0, 0.5) / 100
-odd_minima_rec = st.sidebar.number_input("Odd Mínima Recomendada", value=1.50, step=0.05)
 st.sidebar.header("🔄 Pipeline de Dados (Data Center)")
 st.sidebar.markdown(f"Os teus ficheiros ficam guardados localmente na pasta `{PASTA_DADOS}`.")
 
-# Opções de Processamento configuráveis
+# 2. Opções de Processamento configuráveis
 opcoes_pipeline = st.sidebar.multiselect(
     "Opções de Cálculo a aplicar:",
     [
@@ -1190,7 +1191,7 @@ opcoes_pipeline = st.sidebar.multiselect(
 
 @st.cache_data(show_spinner=False)
 def process_multiple_csvs(file_paths, opcoes) -> pd.DataFrame:
-    """Lê os ficheiros DIRETAMENTE do disco rígido em vez da memória temporária."""
+    """Lê os ficheiros DIRETAMENTE do disco rígido."""
     dfs = []
     for path in file_paths:
         try:
@@ -1221,7 +1222,7 @@ def process_multiple_csvs(file_paths, opcoes) -> pd.DataFrame:
         return pd.concat(dfs, ignore_index=True)
     return pd.DataFrame()
 
-# 2. Upload para gravar no disco
+# 3. Upload para gravar no disco
 ficheiros_upload = st.sidebar.file_uploader(
     "Adicionar NOVOS ficheiros ao arquivo", 
     type=["csv"], 
@@ -1230,13 +1231,12 @@ ficheiros_upload = st.sidebar.file_uploader(
 
 if ficheiros_upload:
     for f in ficheiros_upload:
-        # Gravar fisicamente no teu disco
         caminho_destino = os.path.join(PASTA_DADOS, f.name)
         with open(caminho_destino, "wb") as f_out:
             f_out.write(f.getbuffer())
     st.sidebar.success(f"✅ {len(ficheiros_upload)} ficheiros guardados permanentemente!")
 
-# 3. Descobrir o que já está guardado na pasta
+# 4. Descobrir o que já está guardado na pasta
 ficheiros_locais = [os.path.join(PASTA_DADOS, f) for f in os.listdir(PASTA_DADOS) if f.endswith('.csv')]
 
 if ficheiros_locais:
@@ -1249,7 +1249,12 @@ if ficheiros_locais:
 else:
     df_live = pd.DataFrame()
     st.sidebar.warning("O teu arquivo local está vazio. Faz upload do primeiro CSV.")
-
+st.sidebar.header("2. Filtros de Valor")
+limite_ev      = st.sidebar.slider("EV Mínimo (%)", 1.0, 15.0, 5.0, 0.5) / 100
+odd_minima_rec = st.sidebar.number_input("Odd Mínima Recomendada", value=1.50, step=0.05)
+File "/mount/src/tenisbet/app.py", line 1175, in <module>
+    st.sidebar.markdown(f"Os teus ficheiros ficam guardados localmente na pasta `{PASTA_DADOS}`.")
+                                                                                  
 def safe_idx(name, fallback=0) -> int:
     try:
         return jogadores.index(name) if name in jogadores else fallback
