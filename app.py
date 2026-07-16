@@ -642,6 +642,14 @@ def sync_live_data(circuito: str, ano: int = datetime.now().year) -> pd.DataFram
     
     try:
         response = requests.get(url, timeout=10)
+        
+        # MODO FALLBACK: Se o ano atual der erro 404, tenta o ano anterior
+        if response.status_code == 404:
+            st.warning(f"⚠️ Ficheiro de {ano} ainda não disponível no GitHub. A procurar o ano {ano-1}...")
+            ano -= 1
+            url = f"https://raw.githubusercontent.com/JeffSackmann/tennis_{prefix}/master/{prefix}_matches_{ano}.csv"
+            response = requests.get(url, timeout=10)
+            
         response.raise_for_status()
         df_live = pd.read_csv(io.StringIO(response.text))
         
@@ -660,7 +668,7 @@ def sync_live_data(circuito: str, ano: int = datetime.now().year) -> pd.DataFram
             
         return df_live
     except Exception as e:
-        st.warning(f"Não foi possível sincronizar os dados ao vivo: {e}. A usar cache local.")
+        st.error(f"Falha ao sincronizar dados: {e}")
         return pd.DataFrame()
 
 @st.cache_data(ttl="1h", show_spinner=False)
