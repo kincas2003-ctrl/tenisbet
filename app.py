@@ -1271,17 +1271,22 @@ def safe_idx(name, fallback=0) -> int:
 
 
 def build_setup(p1: str, p2: str, h2h_override=None) -> MatchSetup:
+    # Tenta buscar a velocidade; se falhar ou vel_campo não existir no dicionário, 
+    # assume a quadra "Médio (Hard Normal)" como proteção padrão.
+    mod_seguro = SURFACE_MOD.get(vel_campo, SURFACE_MOD["Médio (Hard Normal)"])
+    
     return MatchSetup(
         p1=get_stats(p1, superficie, circuito, df, df_elos),
         p2=get_stats(p2, superficie, circuito, df, df_elos),
         sets_to_win=sets_input // 2 + 1,
         circuit_cfg=CIRCUIT[circuito],
-        surface_mod=SURFACE_MOD[vel_campo],
+        surface_mod=mod_seguro,
         form_adj=ajuste_forma,
         fatigue_adj=ajuste_fadiga,
         context_adj=ajuste_contexto,
         h2h=h2h_override if h2h_override is not None else get_h2h(p1, p2, df),
         ml_model=ml_model,
+    )
     )
 
 
