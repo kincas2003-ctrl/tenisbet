@@ -951,10 +951,7 @@ def calibration_table(df_bt: pd.DataFrame, n_bins: int = 10) -> pd.DataFrame:
 def fetch_live_odds(api_key: str, circuito: str) -> list:
     """Vai buscar todos os jogos e odds ao vivo da The Odds API."""
     
-    # 1. Definir o prefixo correto consoante o circuito
-    prefix = "tennis_atp" if "ATP" in circuito else "tennis_wta"
-    
-    # 2. Descobrir quais os torneios ativos neste momento
+    # 1. Descobrir quais os torneios ativos neste momento
     sports_url = "https://api.the-odds-api.com/v4/sports/"
     try:
         sports_resp = requests.get(sports_url, params={"apiKey": api_key})
@@ -964,12 +961,20 @@ def fetch_live_odds(api_key: str, circuito: str) -> list:
         st.error(f"Erro ao obter a lista de torneios. Verifica a chave API. Detalhe: {e}")
         return []
     
-    # 3. Filtrar apenas as chaves de torneios de ténis correspondentes ao circuito (ex: tennis_atp_wimbledon)
+    # 2. Procurar chaves que correspondam ao teu circuito selecionado (ATP ou WTA)
+    prefix = "tennis_atp" if "ATP" in circuito else "tennis_wta"
     active_keys = [s["key"] for s in active_sports if str(s["key"]).startswith(prefix)]
     
+    # 3. MODO FALLBACK: Se estiver vazio, tenta puxar QUALQUER ténis disponível
     if not active_keys:
-        st.warning(f"Não há torneios ativos de {circuito} neste exato momento na The Odds API.")
-        return []
+        fallback_keys = [s["key"] for s in active_sports if "tennis" in str(s["key"]).lower()]
+        
+        if fallback_keys:
+            st.info(f"ℹ️ Não há {prefix} hoje (a API foca-se em ATP/WTA 500 e superiores). Vamos carregar outros torneios disponíveis para testares a app!")
+            active_keys = fallback_keys
+        else:
+            st.warning("Não há absolutamente nenhum torneio de ténis a decorrer na The Odds API neste momento.")
+            return []
 
     # 4. Varrer cada torneio ativo e agregar todos os jogos numa única lista
     all_games = []
@@ -977,7 +982,7 @@ def fetch_live_odds(api_key: str, circuito: str) -> list:
         odds_url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/"
         params = {
             "apiKey": api_key,
-            "regions": "eu",        # Puxa casas europeias/globais (Betclic, Betano, Pinnacle, etc.)
+            "regions": "eu",        # Casas europeias/globais (Betano, Pinnacle, etc.)
             "markets": "h2h",       # Mercado de vencedor da partida
             "oddsFormat": "decimal"
         }
@@ -986,8 +991,8 @@ def fetch_live_odds(api_key: str, circuito: str) -> list:
             resp = requests.get(odds_url, params=params)
             resp.raise_for_status()
             all_games.extend(resp.json())
-        except Exception as e:
-            # Em vez de parar tudo, ignoramos se um torneio específico falhar
+        except Exception:
+            # Ignoramos se um torneio específico falhar
             pass
             
     return all_games
