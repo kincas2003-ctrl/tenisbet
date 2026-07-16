@@ -642,36 +642,40 @@ def sync_live_data(circuito: str, start_year: int = datetime.now().year) -> pd.D
     ano_atual = start_year
     response = None
     
-    # Tenta o ano atual e recua continuamente até encontrar dados (limite até 2022)
+    # O nosso "disfarce" para o GitHub não nos bloquear
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    
     while ano_atual >= 2022:
         url = f"https://raw.githubusercontent.com/JeffSackmann/tennis_{prefix}/master/{prefix}_matches_{ano_atual}.csv"
         try:
-            response = requests.get(url, timeout=10)
+            # Passamos o header na chamada
+            response = requests.get(url, headers=headers, timeout=10)
+            
             if response.status_code == 200:
                 st.info(f"✅ Últimos dados encontrados no GitHub correspondem ao ano {ano_atual}. Sincronização concluída!")
                 break
             else:
-                st.warning(f"⚠️ Ficheiro de {ano_atual} não disponível. A tentar procurar em {ano_atual - 1}...")
+                st.warning(f"⚠️ Ficheiro de {ano_atual} inacessível (Erro {response.status_code}). A tentar {ano_atual - 1}...")
                 ano_atual -= 1
-        except Exception:
+        except Exception as e:
+            st.warning(f"Erro de rede ao tentar {ano_atual}: {e}")
             ano_atual -= 1
             
     if response is None or response.status_code != 200:
-        st.error("❌ Não foi possível encontrar ficheiros recentes no GitHub (tentativas esgotadas). A usar dados locais.")
+        st.error("❌ Não foi possível encontrar ficheiros recentes no GitHub. A usar dados locais.")
         return pd.DataFrame()
         
     try:
         df_live = pd.read_csv(io.StringIO(response.text))
         
-        # Limpeza e compatibilidade com o teu formato existente
         df_live.columns = [str(c).lower().strip() for c in df_live.columns]
         
-        # Normalizar nomes
         for col, norm in [("winner_name", "_wn"), ("loser_name", "_on")]:
             if col in df_live.columns:
                 df_live[norm] = df_live[col].astype(str).str.casefold().str.strip()
         
-        # Calcular Hold Rates (se houver dados de serviço)
         if "w_svgms" in df_live.columns:
             df_live["w_hold_pct"] = (df_live["w_svgms"] - df_live.get("l_bpconverted", 0)) / df_live["w_svgms"]
             df_live["l_hold_pct"] = (df_live["l_svgms"] - df_live.get("w_bpconverted", 0)) / df_live["l_svgms"]
