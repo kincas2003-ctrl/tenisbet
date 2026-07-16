@@ -12,6 +12,12 @@ v2 — Melhorias adicionadas:
   6. Módulo de calibração histórica (Brier Score + reliability diagram)
   7. Slider manual de "Contexto" (altitude / torneio / jet lag) como proxy honesto,
      enquanto não existirem dados dedicados a estas variáveis
+
+v3 — Dados reais do Match Charting Project (Jeff Sackmann):
+  8. Hold rate e ace rate por jogador/superfície calculados a partir de dados
+     reais ponto-a-ponto (quando disponíveis) ou implícitos via % de pontos de
+     serviço ganhos (cobertura mais larga), em vez do proxy agregado antigo.
+     Ver player_surface_profile.csv e build_surface_profile.py.
 """
 
 import os
@@ -92,6 +98,15 @@ SURFACE_MOD: Dict[str, SurfaceModifier] = {
 
 MODEL = ModelConfig()
 
+# Pontos de serviço por jogo normal (exclui tie-breaks), calculado empiricamente
+# a partir de ~700 mil pontos reais do Match Charting Project (ver build_surface_profile.py).
+# Usado para converter ace_rate_per_100_serve_pts (do perfil real) em aces-por-jogo.
+PTS_PER_SERVICE_GAME = 6.24
+
+# Nº mínimo de jogos de serviço reais (EXACT) no perfil MCP para confiarmos nele
+# com peso pleno no shrinkage do hold rate; abaixo disso, mistura com a implied/global.
+MCP_HOLD_MIN_GAMES = 40.0
+
 
 # ============================================================================
 # SECÇÃO 2 — MOTOR DE SIMULAÇÃO (Monte Carlo vectorizado com NumPy)
@@ -103,6 +118,7 @@ class PlayerStats:
     hold_rate: float
     fatigue: float
     recent_form: float
+    ace_rate_100: Optional[float] = None  # aces por 100 pontos de serviço (dados reais MCP), se disponível
 
 
 @dataclass
@@ -264,8 +280,19 @@ def simulate(setup: MatchSetup, n: int = MODEL.monte_carlo_n) -> dict:
     p1h, p2h = _hold_probs(match_prob, setup.circuit_cfg, setup.surface_mod)
 
     ace_base = setup.circuit_cfg.base_aces_per_game * setup.surface_mod.ace_multiplier
-    rate_a1 = max(0.05, ace_base + (p1h - setup.circuit_cfg.base_hold))
-    rate_a2 = max(0.05, ace_base + (p2h - setup.circuit_cfg.base_hold))
+
+    # Se existir ace_rate_100 real (Match Charting Project) para o jogador nesta
+    # superfície, converte para aces-por-jogo usando a constante empírica de
+    # pontos-por-jogo. Caso contrário, mantém o fallback pela superfície/hold.
+    if setup.p1.ace_rate_100 is not None:
+        rate_a1 = max(0.02, (setup.p1.ace_rate_100 / 100.0) * PTS_PER_SERVICE_GAME)
+    else:
+        rate_a1 = max(0.05, ace_base + (p1h - setup.circuit_cfg.base_hold))
+
+    if setup.p2.ace_rate_100 is not None:
+        rate_a2 = max(0.02, (setup.p2.ace_rate_100 / 100.0) * PTS_PER_SERVICE_GAME)
+    else:
+        rate_a2 = max(0.05, ace_base + (p2h - setup.circuit_cfg.base_hold))
 
     max_sets = setup.sets_to_win * 2 - 1
     p1_sets  = np.zeros(n, dtype=np.int32)
@@ -588,6 +615,25 @@ def load_elos(circuito: str) -> pd.DataFrame:
     return pd.DataFrame(columns=["Player", "Elo", "hElo", "cElo", "gElo", "_nn"])
 
 
+@st.cache_data
+def load_surface_profile() -> pd.DataFrame:
+    """
+    Perfil real de hold rate e ace rate por jogador/superfície, construído a
+    partir do Match Charting Project (ver build_surface_profile.py). Precisa
+    de 'player_surface_profile.csv' na mesma pasta da app para produzir efeito;
+    caso contrário, o modelo usa apenas o fallback antigo (dados_resumidos + Elo).
+    """
+    f = "player_surface_profile.csv"
+    if os.path.exists(f):
+        prof = pd.read_csv(f)
+        prof["_nn"] = prof["player"].astype(str).str.casefold().str.strip()
+        return prof
+    return pd.DataFrame(columns=[
+        "player", "surface", "n_matches", "hold_rate_final", "hold_rate_source",
+        "games_played_exact", "ace_rate_per_100_serve_pts", "_nn",
+    ])
+
+
 def load_agenda() -> pd.DataFrame:
     """Sem @cache_data — contém datetime.today() que não pode ser congelado."""
     if os.path.exists("agenda.csv"):
@@ -648,6 +694,23 @@ def get_stats(nome: str, superficie: str, circuito: str, df: pd.DataFrame, df_el
             else:
                 hold = hold_global
 
+    # --- Perfil real do Match Charting Project (prioridade sobre o proxy acima) ---
+    # Quando existe hold rate real (exacto jogo-a-jogo, ou implícito via SPW%)
+    # para este jogador nesta superfície, funde-o com o valor acima através de
+    # shrinkage: mais jogos reais reconstruídos -> mais peso no valor real.
+    ace_rate_100 = None
+    df_profile = load_surface_profile()
+    if not df_profile.empty:
+        row = df_profile[(df_profile["_nn"] == nn) & (df_profile["surface"] == superficie)]
+        if not row.empty:
+            row = row.iloc[0]
+            hold_real = float(row["hold_rate_final"])
+            n_games_real = float(row.get("games_played_exact", 0) or 0)
+            w_real = n_games_real / (n_games_real + MCP_HOLD_MIN_GAMES) if n_games_real > 0 else 0.5
+            hold = w_real * hold_real + (1 - w_real) * hold
+            if pd.notna(row.get("ace_rate_per_100_serve_pts")):
+                ace_rate_100 = float(row["ace_rate_per_100_serve_pts"])
+
     # --- Fadiga (valor bruto; a não-linearidade é aplicada em _fatigue_nonlinear) ---
     fatigue = 0.0
     if "_pn" in df.columns and "games_played_last_week" in df.columns:
@@ -675,7 +738,7 @@ def get_stats(nome: str, superficie: str, circuito: str, df: pd.DataFrame, df_el
             wins_arr = np.array(wins)
             form = float(np.sum(weights_arr * wins_arr) / np.sum(weights_arr))
 
-    return PlayerStats(elo=elo, hold_rate=hold, fatigue=fatigue, recent_form=form)
+    return PlayerStats(elo=elo, hold_rate=hold, fatigue=fatigue, recent_form=form, ace_rate_100=ace_rate_100)
 
 
 def get_h2h(p1: str, p2: str, df: pd.DataFrame) -> Tuple[int, int]:
@@ -788,6 +851,11 @@ else:
     st.sidebar.success("🤖 Motor: XGBoost Calibrado")
 
 df_elos    = load_elos(circuito)
+_profile_check = load_surface_profile()
+if _profile_check.empty:
+    st.sidebar.caption("📊 Perfil MCP (hold/ace reais): não encontrado — a usar apenas o proxy antigo.")
+else:
+    st.sidebar.caption(f"📊 Perfil MCP: {len(_profile_check)} combinações jogador/superfície carregadas.")
 superficie = st.sidebar.selectbox("Superfície", sorted(df["surface"].dropna().unique()))
 sets_padrao = [3] if circuito == "WTA (Feminino)" else [3, 5]
 sets_input  = st.sidebar.radio("Sets do Encontro", sets_padrao)
