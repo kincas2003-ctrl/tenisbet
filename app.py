@@ -1172,29 +1172,74 @@ st.sidebar.header("2. Filtros de Valor")
 limite_ev      = st.sidebar.slider("EV Mínimo (%)", 1.0, 15.0, 5.0, 0.5) / 100
 odd_minima_rec = st.sidebar.number_input("Odd Mínima Recomendada", value=1.50, step=0.05)
 st.sidebar.header("🔄 Pipeline de Dados (Data Center)")
-st.sidebar.markdown(
-    "Como a Cloud bloqueia extrações diretas, [descarrega o CSV atualizado aqui](https://github.com/JeffSackmann/tennis_atp) "
-    "e arrasta-o para a caixa abaixo."
+st.sidebar.markdown("Arrasta múltiplos ficheiros CSV para fundir anos de histórico.")
+
+# 1. Opções de Processamento configuráveis pelo utilizador
+opcoes_pipeline = st.sidebar.multiselect(
+    "Opções de Cálculo a aplicar:",
+    [
+        "Normalizar Nomes (Fuzzy/Minúsculas)", 
+        "Calcular Hold/Break Rates (Estatísticas de Serviço)",
+        "Remover Jogos Incompletos (Retiradas/Walkovers)"
+    ],
+    default=[
+        "Normalizar Nomes (Fuzzy/Minúsculas)", 
+        "Calcular Hold/Break Rates (Estatísticas de Serviço)"
+    ]
 )
 
 @st.cache_data(show_spinner=False)
-def process_sackmann_csv(file) -> pd.DataFrame:
-    try:
-        df_live = pd.read_csv(file)
-        df_live.columns = [str(c).lower().strip() for c in df_live.columns]
-        
-        for col, norm in [("winner_name", "_wn"), ("loser_name", "_on")]:
-            if col in df_live.columns:
-                df_live[norm] = df_live[col].astype(str).str.casefold().str.strip()
-                
-        if "w_svgms" in df_live.columns:
-            df_live["w_hold_pct"] = (df_live["w_svgms"] - df_live.get("l_bpconverted", 0)) / df_live["w_svgms"]
-            df_live["l_hold_pct"] = (df_live["l_svgms"] - df_live.get("w_bpconverted", 0)) / df_live["l_svgms"]
+def process_multiple_csvs(files, opcoes) -> pd.DataFrame:
+    dfs = []
+    for file in files:
+        try:
+            df_temp = pd.read_csv(file)
+            df_temp.columns = [str(c).lower().strip() for c in df_temp.columns]
             
-        return df_live
-    except Exception as e:
-        st.sidebar.error(f"Erro ao processar ficheiro: {e}")
-        return pd.DataFrame()
+            # Opção A: Normalizar nomes (Essencial para o Fuzzy Match funcionar bem)
+            if "Normalizar Nomes (Fuzzy/Minúsculas)" in opcoes:
+                for col, norm in [("winner_name", "_wn"), ("loser_name", "_on")]:
+                    if col in df_temp.columns:
+                        df_temp[norm] = df_temp[col].astype(str).str.casefold().str.strip()
+            
+            # Opção B: Cálculos Avançados de Serviço
+            if "Calcular Hold/Break Rates (Estatísticas de Serviço)" in opcoes:
+                if "w_svgms" in df_temp.columns:
+                    # Proteção contra divisão por zero
+                    df_temp["w_svgms"] = df_temp["w_svgms"].replace(0, np.nan)
+                    df_temp["l_svgms"] = df_temp["l_svgms"].replace(0, np.nan)
+                    
+                    df_temp["w_hold_pct"] = (df_temp["w_svgms"] - df_temp.get("l_bpconverted", 0)) / df_temp["w_svgms"]
+                    df_temp["l_hold_pct"] = (df_temp["l_svgms"] - df_temp.get("w_bpconverted", 0)) / df_temp["l_svgms"]
+            
+            # Opção C: Limpeza de Lixo Estatístico
+            if "Remover Jogos Incompletos (Retiradas/Walkovers)" in opcoes:
+                if "score" in df_temp.columns:
+                    df_temp = df_temp[~df_temp["score"].astype(str).str.contains("RET|W/O", na=False)]
+            
+            dfs.append(df_temp)
+        except Exception as e:
+            st.sidebar.error(f"Erro ao processar {file.name}: {e}")
+            
+    # Fundir todos os ficheiros (ex: 2023 + 2024) num único DataFrame gigante
+    if dfs:
+        return pd.concat(dfs, ignore_index=True)
+    return pd.DataFrame()
+
+# 2. Upload de Múltiplos Ficheiros
+ficheiros_upload = st.sidebar.file_uploader(
+    "Carregar CSVs (Sackmann)", 
+    type=["csv"], 
+    accept_multiple_files=True # A magia acontece aqui!
+)
+
+if ficheiros_upload:
+    if st.sidebar.button("Executar Pipeline 🚀", type="primary"):
+        with st.spinner(f"A fundir e processar {len(ficheiros_upload)} ficheiro(s)..."):
+            df_live = process_multiple_csvs(ficheiros_upload, opcoes_pipeline)
+            st.sidebar.success(f"✅ {len(df_live)} encontros injetados no motor com sucesso!")
+else:
+    df_live = pd.DataFrame() # Fallback seguro
 
 ficheiro_upload = st.sidebar.file_uploader("Carregar atp_matches_XXXX.csv", type=["csv"])
 
