@@ -1287,7 +1287,7 @@ def build_setup(p1: str, p2: str, h2h_override=None) -> MatchSetup:
         h2h=h2h_override if h2h_override is not None else get_h2h(p1, p2, df),
         ml_model=ml_model,
     )
-    )
+    
 
 
 def render_results(bets: List[Bet], p1: str, p2: str, sims: dict) -> None:
