@@ -1261,8 +1261,7 @@ else:
 st.sidebar.header("2. Filtros de Valor")
 limite_ev      = st.sidebar.slider("EV Mínimo (%)", 1.0, 15.0, 5.0, 0.5) / 100
 odd_minima_rec = st.sidebar.number_input("Odd Mínima Recomendada", value=1.50, step=0.05)
-File "/mount/src/tenisbet/app.py", line 1175, in <module>
-    st.sidebar.markdown(f"Os teus ficheiros ficam guardados localmente na pasta `{PASTA_DADOS}`.")
+
                                                                                   
 def safe_idx(name, fallback=0) -> int:
     try:
