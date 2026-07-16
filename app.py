@@ -1282,8 +1282,8 @@ def build_setup(p1: str, p2: str, vel_campo: str, h2h_override=None) -> MatchSet
         circuit_cfg=CIRCUIT[circuito],
         surface_mod=mod_seguro,
         form_adj=0,
-        fatigue_adj=0
-        context_adj=0
+        fatigue_adj=0,
+        context_adj=0,
         h2h=h2h_override if h2h_override is not None else get_h2h(p1, p2, df),
         ml_model=ml_model,
     )
