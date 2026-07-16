@@ -698,23 +698,26 @@ def load_surface_profile() -> pd.DataFrame:
     ])
 
 
+@st.cache_data(ttl='1h', show_spinner=False)
 def load_agenda() -> pd.DataFrame:
     if os.path.exists("agenda.csv"):
         try:
             df = pd.read_csv("agenda.csv")
-            df["Data"] = pd.to_datetime(df["Data"]).dt.date
+            if "Data" in df.columns:
+                df["Data"] = pd.to_datetime(df["Data"], errors="coerce").dt.date
             return df
-        except Exception:
-            pass
+        except Exception as e:
+            logging.error(f"Erro ao carregar agenda.csv: {e}")
+
+    # Fallback apenas se o ficheiro não existir
     hoje = datetime.today().date()
     amanha = hoje + timedelta(days=1)
     return pd.DataFrame({
         "Torneio": ["ATP Challenger Amersfoort", "ATP Challenger Amersfoort", "WTA Palermo", "WTA Palermo"],
-        "Data":    [hoje, hoje, hoje, amanha],
-        "Hora":    ["14:00", "15:30", "16:00", "10:00"],
-        "P1":      ["Jesper De Jong", "Jaime Faria", "Qinwen Zheng", "Karolina Muchova"],
-        "P2":      ["Sebastian Baez", "Titouan Droguet", "Sara Errani", "Qinwen Zheng"],
-    })
+        "Data": [hoje, hoje, hoje, amanha],
+        "Hora": ["14:00", "15:30", "16:00", "10:00"],
+        "P1": ["Jesper De Jong", "Jaime Faria", "Qinwen Zheng", "Karolina Muchova"],
+        "P2": ["Sebastian Baez", "Titouan Droguet", "Sara Errani", "Qinwen Zheng"],
 
 
 def _fuzzy_match(name: str, choices: List[str], threshold: float = 85.0) -> str:
@@ -1381,25 +1384,46 @@ tab_agenda, tab_live, tab_scanner, tab_manual, tab_csv, tab_calib, tab_banca = s
 )
 
 with tab_agenda:
-    st.header("📅 Calendário de Torneios")
-    st.markdown("Podes alimentar esta lista criando um ficheiro `agenda.csv` na mesma pasta da app.")
-    data_sel  = st.date_input("🗓️ Selecionar Data", datetime.today().date())
-    df_agenda = load_agenda()
-    jogos_dia = df_agenda[df_agenda["Data"] == data_sel]
+    st.subheader(" Calendário de Jogos")
 
-    if jogos_dia.empty:
-        st.info(f"Sem jogos agendados para {data_sel.strftime('%d/%m/%Y')}.")
-    else:
-        for torneio in jogos_dia["Torneio"].unique():
-            with st.expander(f"🏆 {torneio}", expanded=True):
-                for idx, jogo in jogos_dia[jogos_dia["Torneio"] == torneio].iterrows():
-                    ch, cj, cb = st.columns([2, 6, 2])
-                    ch.markdown(f"🕒 `{jogo['Hora']}`")
-                    cj.markdown(f"**{jogo['P1']}** vs **{jogo['P2']}**")
-                    if cb.button("Carregar", key=f"ag_{idx}"):
-                        st.session_state["agenda_p1"] = jogo["P1"]
-                        st.session_state["agenda_p2"] = jogo["P2"]
-                        st.success("✅ Vai à aba **Auto-Scanner** ou **Calculadora Manual**.")
+agenda = load_agenda()
+
+if agenda.empty:
+    st.info("Não há jogos na agenda.")
+else:
+    # Ordena por data e hora, mas mostra TUDO, sem filtrar por hoje
+    if "Data" in agenda.columns:
+        agenda = agenda.sort_values(by=["Data", "Hora"] if "Hora" in agenda.columns else ["Data"])
+
+    torneios_disponiveis = sorted(agenda["Torneio"].dropna().unique()) if "Torneio" in agenda.columns else []
+
+    # Filtro opcional por torneio, mas por defeito mostra TODOS
+    torneio_filtro = st.multiselect(
+        "Filtrar por torneio (deixa vazio para ver tudo)",
+        torneios_disponiveis,
+        default=[]
+    )
+
+    agenda_visivel = agenda.copy()
+    if torneio_filtro:
+        agenda_visivel = agenda_visivel[agenda_visivel["Torneio"].isin(torneio_filtro)]
+
+    st.dataframe(agenda_visivel, use_container_width=True, hide_index=True)
+
+    # Seleção de jogo para simular
+    if not agenda_visivel.empty:
+        opcoesjogo = [
+            f"{row['P1']} vs {row['P2']} — {row['Torneio']} ({row['Data']})"
+            for , row in agenda_visivel.iterrows()
+        ]
+
+        jogo_escolhido = st.selectbox("Selecionar jogo para simular", opcoes_jogo)
+
+        idx = opcoes_jogo.index(jogo_escolhido)
+        linha_escolhida = agenda_visivel.iloc[idx]
+
+        st.session_state["agenda_p1"] = linha_escolhida["P1"]
+        st.session_state["agenda_p2"] = linha_escolhida["P2"]
 with tab_live:
     st.header("📡 Radar de Valor em Tempo Real")
     st.markdown("O sistema varre dezenas de casas de apostas de uma vez, pega na **melhor odd do mercado** para cada jogador, e cruza-a com o teu modelo matemático.")
