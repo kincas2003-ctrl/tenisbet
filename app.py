@@ -636,66 +636,84 @@ def load_ml_model():
     return None
 @st.cache_data(ttl="12h", show_spinner=False)
 def sync_live_data(circuito: str, start_year: int = datetime.now().year) -> pd.DataFrame:
-    """Vai buscar os resultados ao GitHub disfarçando a chamada como um navegador humano."""
+    """Vai buscar os dados mais recentes ao repositório usando caminhos alternativos de arquivo do Sackmann."""
     import urllib.request
     import urllib.error
     import io
+    import json
     
     prefix = "atp" if "ATP" in circuito else "wta"
-    ano_atual = start_year
     df_live = pd.DataFrame()
     
-    # O nosso "passaporte" falso para passar pela segurança do GitHub
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5'
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
     }
+
+    # Estratégia 1: Tentar obter o histórico recente consolidado (geralmente mantido ativo pelo autor)
+    urls_para_tentar = [
+        f"https://raw.githubusercontent.com/JeffSackmann/tennis_{prefix}/master/{prefix}_matches_{start_year}.csv",
+        f"https://raw.githubusercontent.com/JeffSackmann/tennis_{prefix}/master/{prefix}_matches_{start_year-1}.csv",
+        f"https://raw.githubusercontent.com/JeffSackmann/tennis_{prefix}/master/{prefix}_matches_2024.csv",
+        # Fallback para o ficheiro de atividade recente / qualificações que o autor atualiza dinamicamente
+        f"https://raw.githubusercontent.com/JeffSackmann/tennis_{prefix}/master/{prefix}_matches_qual_rel_archive.csv"
+    ]
     
-    while ano_atual >= 2022:
-        url = f"https://raw.githubusercontent.com/JeffSackmann/tennis_{prefix}/master/{prefix}_matches_{ano_atual}.csv"
-        
+    for url in urls_para_tentar:
         try:
-            # 1. Fazemos o pedido disfarçados de Google Chrome
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=10) as response:
                 csv_data = response.read().decode('utf-8')
-                
-            # 2. Alimentamos os dados puros para o Pandas
+            
             df_live = pd.read_csv(io.StringIO(csv_data))
-            
             if not df_live.empty:
-                st.info(f"✅ Sucesso! O firewall do GitHub foi ultrapassado. Dados de {ano_atual} sincronizados.")
+                nome_ficheiro = url.split('/')[-1]
+                st.info(f"✅ Sincronização bem-sucedida através do arquivo: `{nome_ficheiro}`!")
                 break
-                
-        except urllib.error.HTTPError as e:
-            # Se der erro 404 real (o ficheiro ainda não existe), tentamos o ano anterior
-            st.warning(f"⚠️ O ano {ano_atual} ainda não foi publicado no GitHub (Erro {e.code}). A tentar {ano_atual - 1}...")
-            ano_atual -= 1
-        except Exception as e:
-            st.error(f"Erro inesperado de ligação no ano {ano_atual}: {e}")
-            ano_atual -= 1
-            
+        except Exception:
+            continue
+
+    # Estratégia 2: Se tudo falhar, usamos a API do GitHub para descobrir o que está na pasta em tempo real
     if df_live.empty:
-        st.error("❌ Esgotámos as tentativas. A usar os dados em cache local.")
+        st.warning("⚠️ Caminhos estáticos falharam. A consultar a API do GitHub para mapear a pasta do autor...")
+        api_url = f"https://api.github.com/repos/JeffSackmann/tennis_{prefix}/contents/"
+        try:
+            req = urllib.request.Request(api_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as response:
+                arquivos = json.loads(response.read().decode('utf-8'))
+            
+            # Filtra ficheiros de matches (.csv) e ordena-os para descobrir o mais recente
+            csv_matches = [f["download_url"] for f in arquivos if f["name"].startswith(f"{prefix}_matches_") and f["name"].endswith(".csv")]
+            
+            if csv_matches:
+                # Pegamos no último da lista (geralmente o ano mais recente disponível)
+                url_recente = sorted(csv_matches)[-1]
+                req = urllib.request.Request(url_recente, headers=headers)
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    csv_data = response.read().decode('utf-8')
+                df_live = pd.read_csv(io.StringIO(csv_data))
+                st.info(f"✅ Sucesso dinâmico! Ficheiro detetado e descarregado automaticamente.")
+        except Exception as e:
+            st.error(f"A API do GitHub também rejeitou a listagem: {e}")
+
+    if df_live.empty:
+        st.error("❌ Esgotámos todas as rotas de escape da cloud. A usar exclusivamente os dados locais em cache.")
         return pd.DataFrame()
         
     try:
-        # Limpeza e normalização
         df_live.columns = [str(c).lower().strip() for c in df_live.columns]
         
         for col, norm in [("winner_name", "_wn"), ("loser_name", "_on")]:
             if col in df_live.columns:
                 df_live[norm] = df_live[col].astype(str).str.casefold().str.strip()
         
-        # Calcular as taxas de quebra e serviço
         if "w_svgms" in df_live.columns:
             df_live["w_hold_pct"] = (df_live["w_svgms"] - df_live.get("l_bpconverted", 0)) / df_live["w_svgms"]
             df_live["l_hold_pct"] = (df_live["l_svgms"] - df_live.get("w_bpconverted", 0)) / df_live["l_svgms"]
             
         return df_live
     except Exception as e:
-        st.error(f"Erro ao processar as colunas do ficheiro: {e}")
+        st.error(f"Erro ao processar as colunas do ficheiro descarregado: {e}")
         return pd.DataFrame()
 @st.cache_data(ttl="1h", show_spinner=False)
 def load_match_data() -> pd.DataFrame:
