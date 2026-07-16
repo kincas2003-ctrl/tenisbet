@@ -331,7 +331,7 @@ def simulate(setup: MatchSetup, n: int = MODEL.monte_carlo_n) -> dict:
 # SECÇÃO 3 — MERCADOS (EV e Kelly)
 # ============================================================================
 
-@@dataclass
+@dataclass
 class Bet:
     market: str
     prob: float
