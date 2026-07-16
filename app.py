@@ -1161,6 +1161,7 @@ if _profile_check.empty:
 else:
     st.sidebar.caption(f"📊 Perfil MCP: {len(_profile_check)} combinações jogador/superfície carregadas.")
 superficie = st.sidebar.selectbox("Superfície", sorted(df["surface"].dropna().unique()))
+vel_campo = st.sidebar.selectbox("Velocidade do Campo", list(SURFACE_MOD.keys())) 
 sets_padrao = [3] if circuito == "WTA (Feminino)" else [3, 5]
 sets_input  = st.sidebar.radio("Sets do Encontro", sets_padrao)
 
