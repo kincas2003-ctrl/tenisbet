@@ -598,10 +598,20 @@ def load_ml_model():
 def load_match_data() -> pd.DataFrame:
     with zipfile.ZipFile("dados_resumidos.zip", "r") as z:
         df = pd.read_csv(z.open("dados_resumidos.csv"))
-    # Normalizar nomes uma vez — evita casefold() em cada query
+    
+    # 1. Padronizar todos os nomes de colunas para minúsculas para evitar erros de maiúsculas
+    df.columns = [str(c).lower().strip() for c in df.columns]
+    
+    # 2. Se o teu CSV usa a estrutura padrão (winner / loser), adaptamos automaticamente:
+    if "winner" in df.columns and "loser" in df.columns and "player" not in df.columns:
+        df["player"] = df["winner"]
+        df["opponent"] = df["loser"]
+        
+    # 3. Normalizar nomes uma vez — cria as variáveis internas do modelo (_pn, _on, _wn)
     for col, norm in [("player", "_pn"), ("opponent", "_on"), ("winner", "_wn")]:
         if col in df.columns:
-            df[norm] = df[col].str.casefold().str.strip()
+            df[norm] = df[col].astype(str).str.casefold().str.strip()
+            
     return df
 
 
