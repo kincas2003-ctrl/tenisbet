@@ -709,15 +709,18 @@ def load_agenda() -> pd.DataFrame:
         except Exception as e:
             logging.error(f"Erro ao carregar agenda.csv: {e}")
 
-    # Fallback apenas se o ficheiro não existir
     hoje = datetime.today().date()
     amanha = hoje + timedelta(days=1)
-    return pd.DataFrame()
+
+    dados_fallback = {
         "Torneio": ["ATP Challenger Amersfoort", "ATP Challenger Amersfoort", "WTA Palermo", "WTA Palermo"],
         "Data": [hoje, hoje, hoje, amanha],
         "Hora": ["14:00", "15:30", "16:00", "10:00"],
         "P1": ["Jesper De Jong", "Jaime Faria", "Qinwen Zheng", "Karolina Muchova"],
         "P2": ["Sebastian Baez", "Titouan Droguet", "Sara Errani", "Qinwen Zheng"],
+    }
+
+    return pd.DataFrame(dados_fallback)
 
 
 def _fuzzy_match(name: str, choices: List[str], threshold: float = 85.0) -> str:
