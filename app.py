@@ -266,7 +266,7 @@ def _sim_set(
 def simulate(setup: MatchSetup, n: int = MODEL.monte_carlo_n) -> dict:
     rng = np.random.default_rng(42)
     match_prob = _compute_match_prob(setup)
-    p1h, p2h = _hold_probs(match_prob, setup.circuit_cfg, setup.surface_mod)
+    p1h, p2h = _hold_probs(match_prob, setup)
 
     ace_base = setup.circuit_cfg.base_aces_per_game * setup.surface_mod.ace_multiplier
 
