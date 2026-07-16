@@ -635,22 +635,32 @@ def load_ml_model():
         pass
     return None
 @st.cache_data(ttl="12h", show_spinner=False)
-def sync_live_data(circuito: str, ano: int = datetime.now().year) -> pd.DataFrame:
+def sync_live_data(circuito: str, start_year: int = datetime.now().year) -> pd.DataFrame:
     """Vai buscar os resultados mais recentes diretamente à base de dados global (Sackmann)."""
     prefix = "atp" if "ATP" in circuito else "wta"
-    url = f"https://raw.githubusercontent.com/JeffSackmann/tennis_{prefix}/master/{prefix}_matches_{ano}.csv"
     
-    try:
-        response = requests.get(url, timeout=10)
-        
-        # MODO FALLBACK: Se o ano atual der erro 404, tenta o ano anterior
-        if response.status_code == 404:
-            st.warning(f"⚠️ Ficheiro de {ano} ainda não disponível no GitHub. A procurar o ano {ano-1}...")
-            ano -= 1
-            url = f"https://raw.githubusercontent.com/JeffSackmann/tennis_{prefix}/master/{prefix}_matches_{ano}.csv"
+    ano_atual = start_year
+    response = None
+    
+    # Tenta o ano atual e recua continuamente até encontrar dados (limite até 2022)
+    while ano_atual >= 2022:
+        url = f"https://raw.githubusercontent.com/JeffSackmann/tennis_{prefix}/master/{prefix}_matches_{ano_atual}.csv"
+        try:
             response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                st.info(f"✅ Últimos dados encontrados no GitHub correspondem ao ano {ano_atual}. Sincronização concluída!")
+                break
+            else:
+                st.warning(f"⚠️ Ficheiro de {ano_atual} não disponível. A tentar procurar em {ano_atual - 1}...")
+                ano_atual -= 1
+        except Exception:
+            ano_atual -= 1
             
-        response.raise_for_status()
+    if response is None or response.status_code != 200:
+        st.error("❌ Não foi possível encontrar ficheiros recentes no GitHub (tentativas esgotadas). A usar dados locais.")
+        return pd.DataFrame()
+        
+    try:
         df_live = pd.read_csv(io.StringIO(response.text))
         
         # Limpeza e compatibilidade com o teu formato existente
@@ -668,7 +678,7 @@ def sync_live_data(circuito: str, ano: int = datetime.now().year) -> pd.DataFram
             
         return df_live
     except Exception as e:
-        st.error(f"Falha ao sincronizar dados: {e}")
+        st.error(f"Falha ao processar o ficheiro descarregado: {e}")
         return pd.DataFrame()
 
 @st.cache_data(ttl="1h", show_spinner=False)
