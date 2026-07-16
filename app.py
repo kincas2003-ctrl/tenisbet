@@ -1270,9 +1270,8 @@ def safe_idx(name, fallback=0) -> int:
         return fallback
 
 
-def build_setup(p1: str, p2: str, h2h_override=None) -> MatchSetup:
-    # Tenta buscar a velocidade; se falhar ou vel_campo não existir no dicionário, 
-    # assume a quadra "Médio (Hard Normal)" como proteção padrão.
+def build_setup(p1: str, p2: str, vel_campo: str, h2h_override=None) -> MatchSetup:
+    
     mod_seguro = SURFACE_MOD.get(vel_campo, SURFACE_MOD["Médio (Hard Normal)"])
     
     return MatchSetup(
@@ -1494,7 +1493,7 @@ with tab_manual:
 
         if st.button("Calcular EV", key="btn_manual"):
             with st.spinner("A simular..."):
-                sims = simulate(build_setup(mp1, mp2))
+                sims = simulate(build_setup(mp1, mp2, vel_campo))
                 mkts = _empty_mkts()
                 mkts["match_winner"] = {"P1": odd1, "P2": odd2}
                 bets = compute_markets(sims, mkts, mp1, mp2)
