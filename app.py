@@ -887,9 +887,12 @@ def get_stats(nome: str, superficie: str, circuito: str, df: pd.DataFrame, df_el
             if np.sum(weights_arr) > 0:
                 form = float(np.sum(weights_arr * wins_arr) / np.sum(weights_arr))
 
+    return_rate = 1.0 - cfg.base_hold
+
     return PlayerStats(
         elo=elo, 
         hold_rate=hold, 
+        return_rate=return_rate,  # A linha que faltava!
         fatigue=fatigue, 
         recent_form=form, 
         ace_rate_100=ace_rate_100, 
