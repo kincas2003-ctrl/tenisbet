@@ -1416,7 +1416,7 @@ else:
     # Seleção de jogo para simular
     if not agenda_visivel.empty:
         opcoesjogo = [
-            f"{row['P1']} vs {row['P2']} — {row['Torneio']} ({row['Data']})"
+            f"{row['P1']} vs {row['P2']} - {row['Torneio']} ({row['Data']})"
             for_ ,row in agenda_visivel.iterrows()
         ]
 
