@@ -37,8 +37,12 @@ import streamlit as st
 from rapidfuzz import process, fuzz
 import requests
 import matplotlib.pyplot as plt
-# Configuração de Logs
+
+Configuração de Logs,
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+
+PASTA_DADOS = "dados_historicos"
+os.makedirs(PASTA_DADOS, exist_ok=True)
 
 # ============================================================================
 # SECÇÃO 1 — CONFIGURAÇÃO (todos os parâmetros num único lugar)
@@ -647,21 +651,27 @@ def load_ml_model():
         pass
     return None
 
-@st.cache_data(ttl="1h", show_spinner=False)
+@st.cache_data(ttl='1h', show_spinner=False)
 def load_match_data() -> pd.DataFrame:
-    with zipfile.ZipFile("dados_resumidos.zip", "r") as z:
-        df = pd.read_csv(z.open("dados_resumidos.csv"))
-    
+    if not os.path.exists("dados_resumidos.zip"):
+        return pd.DataFrame() # Devolve vazio em vez de rebentar a app
+
+    try:
+        with zipfile.ZipFile("dados_resumidos.zip", 'r') as z:
+            df = pd.read_csv(z.open("dados_resumidos.csv"))
+    except Exception:
+        return pd.DataFrame()
+
     df.columns = [str(c).lower().strip() for c in df.columns]
-    
-    if "winner" in df.columns and "loser" in df.columns and "player" not in df.columns:
-        df["player"] = df["winner"]
-        df["opponent"] = df["loser"]
-        
-    for col, norm in [("player", "_pn"), ("opponent", "_on"), ("winner", "_wn")]:
+
+    if 'winner' in df.columns and 'loser' in df.columns and 'player' not in df.columns:
+        df['player'] = df['winner']
+        df['opponent'] = df['loser']
+
+    for col, norm in [('player', '_pn'), ('opponent', '_on'), ('winner', '_wn')]:
         if col in df.columns:
             df[norm] = df[col].astype(str).str.casefold().str.strip()
-            
+
     return df
 
 
@@ -1082,16 +1092,16 @@ def get_bet_history() -> pd.DataFrame:
     return df_bets
 
 def get_exposed_bankroll() -> float:
-    """Calcula quanta % da banca está neste momento pendente no mercado."""
-    conn = sqlite3.connect("quantbet.db")
-    c = conn.cursor()
     try:
+        conn = sqlite3.connect('quantbet.db')
+        c = conn.cursor()
         c.execute("SELECT SUM(stake_pct) FROM bet_history WHERE status = 'Pendente'")
         val = c.fetchone()[0]
         exposed = float(val) if val else 0.0
-    except:
+        conn.close()
+    except sqlite3.Error as e:
+        logging.error(f"Erro SQLite: {e}")
         exposed = 0.0
-    conn.close()
     return exposed
 
 def resolve_bet(bet_id: int, status: str, odd: float, stake_pct: float, closing_odd: float):
