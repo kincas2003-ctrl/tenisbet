@@ -742,7 +742,7 @@ def load_agenda() -> pd.DataFrame:
     {"Circuito": "WTA", "Torneio": "Iasi (Roménia)", "Superficie": "Terra batida", "Hora": "17:00", "P1": "Zidansek T.", "P2": "Marcinko P.", "Status": ""},
 ]
 
-dados_fallback = pd.DataFrame(jogos)
+ dados_fallback = pd.DataFrame(jogos)
 
 
 def _fuzzy_match(name: str, choices: List[str], threshold: float = 85.0) -> str:
