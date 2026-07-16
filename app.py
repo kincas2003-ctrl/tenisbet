@@ -35,6 +35,7 @@ import pandas as pd
 import streamlit as st
 from rapidfuzz import process, fuzz
 import requests
+import matplotlib.pyplot as plt
 # Configuração de Logs
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
@@ -360,28 +361,32 @@ def _devig_probs(odd1: float, odd2: float) -> Tuple[float, float]:
     return (implied1, implied2)
 
 
-def optimize_portfolio(bets: List[Bet], max_exposure: float = MODEL.kelly_max * 1.5) -> List[Bet]:
+def optimize_portfolio(bets: List[Bet], max_global_exposure: float = 0.15) -> List[Bet]:
     """
-    Previne exposição excessiva filtrando apostas correlacionadas.
-    Ex: Não aposta no P1 Vencer e no P1 Handicap em simultâneo. Fica só com a de melhor Kelly.
+    Filtra apostas correlacionadas e corta a stake caso a tua banca global 
+    já esteja demasiado exposta (limite de 15% de banca pendente).
     """
+    pendentes_atuais = get_exposed_bankroll()
+    budget_disponivel = max(0.0, max_global_exposure - pendentes_atuais)
+    
     sorted_bets = sorted([b for b in bets if b.ev > 0], key=lambda b: b.kelly, reverse=True)
     portfolio = []
-    current_exposure = 0.0
+    current_game_exposure = 0.0
     lados_cobertos = set()
     
     for b in sorted_bets:
-        # Define a categoria para evitar dependências colineares
         if any(x in b.market for x in ["P1", "Jogador 1"]): cat = "Lado_P1"
         elif any(x in b.market for x in ["P2", "Jogador 2"]): cat = "Lado_P2"
         else: cat = "Totais_O/U"
               
         if cat in lados_cobertos and cat != "Totais_O/U":
-            continue # Já temos a melhor aposta para este jogador, ignorar redundâncias
+            continue 
             
-        if current_exposure + b.stake_pct <= max_exposure:
+        # Verifica se o jogo e a banca global aguentam mais esta aposta
+        if (current_game_exposure + b.stake_pct <= (MODEL.kelly_max * 1.5)) and (b.stake_pct <= budget_disponivel):
             portfolio.append(b)
-            current_exposure += b.stake_pct
+            current_game_exposure += b.stake_pct
+            budget_disponivel -= b.stake_pct
             lados_cobertos.add(cat)
             
     return portfolio
@@ -1001,11 +1006,11 @@ def match_api_names(api_name: str, escolhas_validas: list) -> str:
     """Corrige os nomes da API para baterem certo com a tua base de dados."""
     return _fuzzy_match(api_name, escolhas_validas, threshold=80.0)
 # ============================================================================
+# ============================================================================
 # SECÇÃO 8 — GESTÃO DE BANCA E HISTÓRICO (SQLite)
 # ============================================================================
 
 def init_db():
-    """Inicializa a base de dados e cria a tabela se não existir."""
     conn = sqlite3.connect("quantbet.db")
     c = conn.cursor()
     c.execute('''
@@ -1018,14 +1023,19 @@ def init_db():
             stake_pct REAL,
             ev_projetado REAL,
             status TEXT DEFAULT 'Pendente',
-            lucro_real REAL DEFAULT 0.0
+            lucro_real REAL DEFAULT 0.0,
+            closing_odd REAL DEFAULT 0.0
         )
     ''')
+    # Tenta adicionar a coluna closing_odd caso a tabela já exista (atualização segura)
+    try:
+        c.execute("ALTER TABLE bet_history ADD COLUMN closing_odd REAL DEFAULT 0.0")
+    except sqlite3.OperationalError:
+        pass # A coluna já existe, ignorar
     conn.commit()
     conn.close()
 
 def add_bet(encontro: str, mercado: str, odd: float, stake_pct: float, ev: float):
-    """Regista uma nova aposta sugerida pelo modelo."""
     conn = sqlite3.connect("quantbet.db")
     c = conn.cursor()
     hoje = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -1037,14 +1047,25 @@ def add_bet(encontro: str, mercado: str, odd: float, stake_pct: float, ev: float
     conn.close()
 
 def get_bet_history() -> pd.DataFrame:
-    """Recupera o histórico completo de apostas."""
     conn = sqlite3.connect("quantbet.db")
     df_bets = pd.read_sql_query("SELECT * FROM bet_history ORDER BY id DESC", conn)
     conn.close()
     return df_bets
 
-def resolve_bet(bet_id: int, status: str, odd: float, stake_pct: float):
-    """Atualiza o resultado de uma aposta (Ganha/Perdida) e calcula o lucro."""
+def get_exposed_bankroll() -> float:
+    """Calcula quanta % da banca está neste momento pendente no mercado."""
+    conn = sqlite3.connect("quantbet.db")
+    c = conn.cursor()
+    try:
+        c.execute("SELECT SUM(stake_pct) FROM bet_history WHERE status = 'Pendente'")
+        val = c.fetchone()[0]
+        exposed = float(val) if val else 0.0
+    except:
+        exposed = 0.0
+    conn.close()
+    return exposed
+
+def resolve_bet(bet_id: int, status: str, odd: float, stake_pct: float, closing_odd: float):
     lucro = 0.0
     if status == 'Ganha':
         lucro = stake_pct * (odd - 1.0)
@@ -1055,13 +1076,12 @@ def resolve_bet(bet_id: int, status: str, odd: float, stake_pct: float):
     c = conn.cursor()
     c.execute('''
         UPDATE bet_history 
-        SET status = ?, lucro_real = ? 
+        SET status = ?, lucro_real = ?, closing_odd = ?
         WHERE id = ?
-    ''', (status, lucro, bet_id))
+    ''', (status, lucro, closing_odd, bet_id))
     conn.commit()
     conn.close()
 
-# Inicializa a base de dados imediatamente ao carregar o script
 init_db()
 # ============================================================================
 # SECÇÃO 6 — INTERFACE STREAMLIT
@@ -1141,12 +1161,10 @@ def render_results(bets: List[Bet], p1: str, p2: str, sims: dict) -> None:
         st.error("Não foram encontrados mercados. Verifica a formatação do texto.")
         return
 
-    # Filtra apenas apostas que atingem os critérios mínimos
     eligible_bets = [b for b in bets if b.ev >= limite_ev and b.odd >= odd_minima_rec]
-    
-    # Aplica o filtro Correlacionado para construir um "Portfólio" de risco gerido
     portfolio = optimize_portfolio(eligible_bets)
 
+    # 1. Recomendação de Risco Gerido
     if portfolio:
         st.markdown("---")
         st.markdown("### 🏆 Portfólio de Jogo Recomendado (Risco Gerido)")
@@ -1162,22 +1180,34 @@ def render_results(bets: List[Bet], p1: str, p2: str, sims: dict) -> None:
                     f"Odd: `{bet.odd:.2f}` | Prob: `{bet.prob:.1%}`\n\n"
                     f"📈 EV: `+{bet.ev:.1%}` | ⚖️ Stake: **{bet.stake_pct:.1%}**"
                 )
-                
-                # Botão para registar a aposta na Base de Dados
                 if st.button("Gravar Aposta 💾", key=f"gravar_{p1}_{p2}_{bet.market}"):
-                    add_bet(
-                        encontro=f"{p1} vs {p2}",
-                        mercado=bet.market,
-                        odd=bet.odd,
-                        stake_pct=bet.stake_pct,
-                        ev=bet.ev
-                    )
+                    add_bet(f"{p1} vs {p2}", bet.market, bet.odd, bet.stake_pct, bet.ev)
                     st.toast("✅ Aposta registada com sucesso na tua Banca!")
             
-        st.caption(f"**Exposição Total no Jogo:** {total_stake:.1%} da Banca")
+        banca_livre = 0.15 - get_exposed_bankroll()
+        st.caption(f"**Exposição no Jogo:** {total_stake:.1%} | **Banca Livre Restante:** {banca_livre:.1%}")
         st.markdown("---")
 
-    # Tabela Completa
+    # 2. Histogramas do Motor de Monte Carlo
+    st.markdown("#### 📊 Distribuição Visual de Probabilidades (10.000 Simulações)")
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
+    
+    # Histograma de Totais de Jogos
+    ax1.hist(sims['total_games'], bins=range(15, 40), color='#4CAF50', edgecolor='white', alpha=0.8)
+    ax1.axvline(np.mean(sims['total_games']), color='red', linestyle='dashed', linewidth=2, label='Média')
+    ax1.set_title("Total de Jogos Previstos")
+    ax1.legend()
+
+    # Histograma de Handicaps
+    ax2.hist(sims['game_diff'], bins=range(-12, 13), color='#2196F3', edgecolor='white', alpha=0.8)
+    ax2.axvline(np.mean(sims['game_diff']), color='red', linestyle='dashed', linewidth=2, label='Média')
+    ax2.set_title(f"Vantagem de Jogos ({p1} positivo)")
+    ax2.legend()
+    
+    st.pyplot(fig)
+    st.markdown("---")
+
+    # 3. Auditoria
     rows = [{
         "Status":    "✅ Selecionada" if b in portfolio else ("🔄 Valor Redundante" if b.ev >= limite_ev else "❌ Evitar"),
         "Mercado":   b.market,
@@ -1189,13 +1219,6 @@ def render_results(bets: List[Bet], p1: str, p2: str, sims: dict) -> None:
     
     st.markdown("#### 📋 Auditoria Completa")
     st.dataframe(pd.DataFrame(rows), use_container_width=True)
-
-    with st.expander("🔬 Parâmetros do Modelo"):
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Prob. Vitória P1",      f"{np.mean(sims['p1_match_wins']):.1%}")
-        c2.metric("P1 Hold Rate",          f"{sims['p1_hold']:.1%}")
-        c3.metric("P2 Hold Rate",          f"{sims['p2_hold']:.1%}")
-        c4.metric("Desvio Padrão Volatilidade", f"P1: {sims.get('p1_std', 'N/A')} | P2: {sims.get('p2_std', 'N/A')}")
 
 tab_agenda, tab_live, tab_scanner, tab_manual, tab_csv, tab_calib, tab_banca = st.tabs(
     ["📅 Agenda", "📡 Radar", "🤖 Auto-Scanner", "🔍 Manual", "🚀 CSV", "📉 Calibração", "💰 Gestão de Banca"]
@@ -1439,65 +1462,75 @@ with tab_calib:
                     st.line_chart(chart_df)
 with tab_banca:
     st.header("💰 Gestão de Banca e Tracking Real")
-    st.markdown("Monitoriza a performance real das tuas recomendações no mercado.")
+    st.markdown("Monitoriza a performance real das tuas recomendações e o teu **Closing Line Value (CLV)**.")
     
     df_history = get_bet_history()
     
     if df_history.empty:
-        st.info("Ainda não registaste nenhuma aposta. Usa os scanners para encontrar valor e clica em 'Gravar Aposta'.")
+        st.info("Ainda não registaste nenhuma aposta.")
     else:
-        # Métricas Globais do Portfólio
+        # Calcular CLV para apostas que tenham odd de fecho
+        df_history['clv_pct'] = np.where(
+            df_history['closing_odd'] > 0, 
+            (df_history['odd'] / df_history['closing_odd']) - 1.0, 
+            0.0
+        )
+
         df_resolvidas = df_history[df_history["status"] != "Pendente"]
-        
         total_apostas = len(df_resolvidas)
-        lucro_total = df_resolvidas["lucro_real"].sum() * 100 # Multiplica por 100 para mostrar em % de Banca
+        lucro_total = df_resolvidas["lucro_real"].sum() * 100 
         volume_investido = df_resolvidas["stake_pct"].sum() * 100
-        
         roi = (lucro_total / volume_investido) * 100 if volume_investido > 0 else 0.0
         
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Apostas Resolvidas", total_apostas)
-        c2.metric("Volume Investido", f"{volume_investido:.2f} U")
+        # Média de CLV (apenas para apostas onde registaste o fecho)
+        df_clv_validos = df_history[df_history['closing_odd'] > 0]
+        clv_medio = df_clv_validos['clv_pct'].mean() * 100 if not df_clv_validos.empty else 0.0
         
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Volume Investido", f"{volume_investido:.2f} U")
         cor_lucro = "normal" if lucro_total >= 0 else "inverse"
-        c3.metric("Lucro Líquido", f"{lucro_total:.2f} U", delta_color=cor_lucro)
-        c4.metric("ROI / Yield Real", f"{roi:.2f}%", delta_color=cor_lucro)
+        c2.metric("Lucro Líquido", f"{lucro_total:.2f} U", delta_color=cor_lucro)
+        c3.metric("ROI / Yield Real", f"{roi:.2f}%", delta_color=cor_lucro)
+        cor_clv = "normal" if clv_medio >= 0 else "inverse"
+        c4.metric("Avg. Closing Line Value", f"{clv_medio:.2f}%", delta_color=cor_clv, help="Bater a odd de fecho é a verdadeira prova matemática do teu modelo.")
         
         st.markdown("---")
-        
-        # Resolução de Apostas Pendentes
         st.subheader("⏳ Resolver Apostas Pendentes")
         df_pendentes = df_history[df_history["status"] == "Pendente"]
         
         if not df_pendentes.empty:
             for _, row in df_pendentes.iterrows():
-                cc1, cc2, cc3 = st.columns([4, 2, 2])
-                cc1.markdown(f"**{row['encontro']}** | {row['mercado']} (Odd: {row['odd']} | Stake: {row['stake_pct']:.2%})")
-                
-                with cc2:
-                    if st.button("✅ Ganha", key=f"win_{row['id']}"):
-                        resolve_bet(row['id'], "Ganha", row['odd'], row['stake_pct'])
+                with st.container():
+                    c_info, c_input, c_win, c_loss = st.columns([4, 2, 1, 1])
+                    c_info.markdown(f"**{row['encontro']}** | {row['mercado']}<br>Odd Comprada: `{row['odd']}` | Stake: `{row['stake_pct']:.2%}`", unsafe_allow_html=True)
+                    
+                    # Input para a Odd de Fecho
+                    closing_odd_input = c_input.number_input(
+                        "Odd Fecho (Opcional)", 
+                        min_value=1.0, value=float(row['odd']), step=0.01, key=f"close_{row['id']}"
+                    )
+                    
+                    if c_win.button("✅ Win", key=f"win_{row['id']}"):
+                        resolve_bet(row['id'], "Ganha", row['odd'], row['stake_pct'], closing_odd_input)
                         st.rerun()
-                with cc3:
-                    if st.button("❌ Perdida", key=f"loss_{row['id']}"):
-                        resolve_bet(row['id'], "Perdida", row['odd'], row['stake_pct'])
+                    if c_loss.button("❌ Loss", key=f"loss_{row['id']}"):
+                        resolve_bet(row['id'], "Perdida", row['odd'], row['stake_pct'], closing_odd_input)
                         st.rerun()
+                st.write("") # espaçamento
         else:
             st.success("Não tens apostas pendentes!")
             
         st.markdown("---")
-        
-        # Tabela do Histórico Completo
         st.subheader("📖 Histórico Completo")
         
-        # Formatar a tabela para visualização bonita
         df_view = df_history.copy()
         df_view["stake_pct"] = (df_view["stake_pct"] * 100).map("{:.2f}%".format)
         df_view["ev_projetado"] = (df_view["ev_projetado"] * 100).map("+{:.1f}%".format)
         df_view["lucro_real"] = df_view["lucro_real"].map("{:.3f} U".format)
+        df_view["clv_pct"] = (df_view["clv_pct"] * 100).map("{:+.2f}%".format)
         
         st.dataframe(
-            df_view[["id", "data_registo", "encontro", "mercado", "odd", "stake_pct", "ev_projetado", "status", "lucro_real"]],
+            df_view[["id", "encontro", "mercado", "odd", "closing_odd", "clv_pct", "stake_pct", "status", "lucro_real"]],
             use_container_width=True,
             hide_index=True
         )
