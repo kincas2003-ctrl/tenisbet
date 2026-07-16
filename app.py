@@ -634,87 +634,7 @@ def load_ml_model():
     except ImportError:
         pass
     return None
-@st.cache_data(ttl="12h", show_spinner=False)
-def sync_live_data(circuito: str, start_year: int = datetime.now().year) -> pd.DataFrame:
-    """Vai buscar os dados mais recentes ao repositório usando caminhos alternativos de arquivo do Sackmann."""
-    import urllib.request
-    import urllib.error
-    import io
-    import json
-    
-    prefix = "atp" if "ATP" in circuito else "wta"
-    df_live = pd.DataFrame()
-    
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
-    }
 
-    # Estratégia 1: Tentar obter o histórico recente consolidado (geralmente mantido ativo pelo autor)
-    urls_para_tentar = [
-        f"https://raw.githubusercontent.com/JeffSackmann/tennis_{prefix}/master/{prefix}_matches_{start_year}.csv",
-        f"https://raw.githubusercontent.com/JeffSackmann/tennis_{prefix}/master/{prefix}_matches_{start_year-1}.csv",
-        f"https://raw.githubusercontent.com/JeffSackmann/tennis_{prefix}/master/{prefix}_matches_2024.csv",
-        # Fallback para o ficheiro de atividade recente / qualificações que o autor atualiza dinamicamente
-        f"https://raw.githubusercontent.com/JeffSackmann/tennis_{prefix}/master/{prefix}_matches_qual_rel_archive.csv"
-    ]
-    
-    for url in urls_para_tentar:
-        try:
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=10) as response:
-                csv_data = response.read().decode('utf-8')
-            
-            df_live = pd.read_csv(io.StringIO(csv_data))
-            if not df_live.empty:
-                nome_ficheiro = url.split('/')[-1]
-                st.info(f"✅ Sincronização bem-sucedida através do arquivo: `{nome_ficheiro}`!")
-                break
-        except Exception:
-            continue
-
-    # Estratégia 2: Se tudo falhar, usamos a API do GitHub para descobrir o que está na pasta em tempo real
-    if df_live.empty:
-        st.warning("⚠️ Caminhos estáticos falharam. A consultar a API do GitHub para mapear a pasta do autor...")
-        api_url = f"https://api.github.com/repos/JeffSackmann/tennis_{prefix}/contents/"
-        try:
-            req = urllib.request.Request(api_url, headers=headers)
-            with urllib.request.urlopen(req, timeout=10) as response:
-                arquivos = json.loads(response.read().decode('utf-8'))
-            
-            # Filtra ficheiros de matches (.csv) e ordena-os para descobrir o mais recente
-            csv_matches = [f["download_url"] for f in arquivos if f["name"].startswith(f"{prefix}_matches_") and f["name"].endswith(".csv")]
-            
-            if csv_matches:
-                # Pegamos no último da lista (geralmente o ano mais recente disponível)
-                url_recente = sorted(csv_matches)[-1]
-                req = urllib.request.Request(url_recente, headers=headers)
-                with urllib.request.urlopen(req, timeout=10) as response:
-                    csv_data = response.read().decode('utf-8')
-                df_live = pd.read_csv(io.StringIO(csv_data))
-                st.info(f"✅ Sucesso dinâmico! Ficheiro detetado e descarregado automaticamente.")
-        except Exception as e:
-            st.error(f"A API do GitHub também rejeitou a listagem: {e}")
-
-    if df_live.empty:
-        st.error("❌ Esgotámos todas as rotas de escape da cloud. A usar exclusivamente os dados locais em cache.")
-        return pd.DataFrame()
-        
-    try:
-        df_live.columns = [str(c).lower().strip() for c in df_live.columns]
-        
-        for col, norm in [("winner_name", "_wn"), ("loser_name", "_on")]:
-            if col in df_live.columns:
-                df_live[norm] = df_live[col].astype(str).str.casefold().str.strip()
-        
-        if "w_svgms" in df_live.columns:
-            df_live["w_hold_pct"] = (df_live["w_svgms"] - df_live.get("l_bpconverted", 0)) / df_live["w_svgms"]
-            df_live["l_hold_pct"] = (df_live["l_svgms"] - df_live.get("w_bpconverted", 0)) / df_live["l_svgms"]
-            
-        return df_live
-    except Exception as e:
-        st.error(f"Erro ao processar as colunas do ficheiro descarregado: {e}")
-        return pd.DataFrame()
 @st.cache_data(ttl="1h", show_spinner=False)
 def load_match_data() -> pd.DataFrame:
     with zipfile.ZipFile("dados_resumidos.zip", "r") as z:
@@ -1251,11 +1171,39 @@ if len(jogadores) < 2:
 st.sidebar.header("2. Filtros de Valor")
 limite_ev      = st.sidebar.slider("EV Mínimo (%)", 1.0, 15.0, 5.0, 0.5) / 100
 odd_minima_rec = st.sidebar.number_input("Odd Mínima Recomendada", value=1.50, step=0.05)
-st.sidebar.header("🔄 Pipeline de Dados")
-if st.sidebar.button("Sincronizar Dados da Época", type="primary"):
-    with st.spinner("A descarregar resultados mais recentes..."):
-        df_live = sync_live_data(circuito)
-        st.sidebar.success(f"✅ {len(df_live)} jogos atualizados com sucesso!")
+st.sidebar.header("🔄 Pipeline de Dados (Data Center)")
+st.sidebar.markdown(
+    "Como a Cloud bloqueia extrações diretas, [descarrega o CSV atualizado aqui](https://github.com/JeffSackmann/tennis_atp) "
+    "e arrasta-o para a caixa abaixo."
+)
+
+@st.cache_data(show_spinner=False)
+def process_sackmann_csv(file) -> pd.DataFrame:
+    try:
+        df_live = pd.read_csv(file)
+        df_live.columns = [str(c).lower().strip() for c in df_live.columns]
+        
+        for col, norm in [("winner_name", "_wn"), ("loser_name", "_on")]:
+            if col in df_live.columns:
+                df_live[norm] = df_live[col].astype(str).str.casefold().str.strip()
+                
+        if "w_svgms" in df_live.columns:
+            df_live["w_hold_pct"] = (df_live["w_svgms"] - df_live.get("l_bpconverted", 0)) / df_live["w_svgms"]
+            df_live["l_hold_pct"] = (df_live["l_svgms"] - df_live.get("w_bpconverted", 0)) / df_live["l_svgms"]
+            
+        return df_live
+    except Exception as e:
+        st.sidebar.error(f"Erro ao processar ficheiro: {e}")
+        return pd.DataFrame()
+
+ficheiro_upload = st.sidebar.file_uploader("Carregar atp_matches_XXXX.csv", type=["csv"])
+
+if ficheiro_upload is not None:
+    with st.spinner("A injetar novos dados no motor matemático..."):
+        df_live = process_sackmann_csv(ficheiro_upload)
+        st.sidebar.success(f"✅ {len(df_live)} encontros injetados e processados!")
+else:
+    df_live = pd.DataFrame() # Usa os dados locais se não houver upload
 st.sidebar.header("⚙️ Condições de Jogo")
 vel_campo     = st.sidebar.selectbox("Velocidade do Campo", list(SURFACE_MOD.keys()))
 ajuste_forma  = st.sidebar.slider("Ajuste de Forma (P1 vs P2)", -5, 5, 0)
