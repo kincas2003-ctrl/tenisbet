@@ -101,17 +101,10 @@ CIRCUIT: Dict[str, CircuitConfig] = {
     ),
 }
 SURFACE_TO_ELO_COL = {
-    "Clay": "cElo",
-    "Grass": "gElo",
-    "Hard": "hElo",
-    "Terra batida": "cElo",
-    "Piso duro": "hElo",
-    "Grama": "gElo",
-    "Lento (Clay Lento)": "cElo",
-    "Médio-Lento (Clay Rápido / Hard Lento)": "cElo",
-    "Médio (Hard Normal)": "hElo",
-    "Rápido (Grass / Hard Rápido)": "gElo",
-    "Ultra Rápido (Indoor Rápido)": "hElo",
+    "Hard": "HardElo",    # Se o jogo for Hard, procura na coluna 'HardElo'
+    "Clay": "ClayElo",    # Se o jogo for Clay, procura na coluna 'ClayElo'
+    "Grass": "GrassElo",  # Se o jogo for Grass, procura na coluna 'GrassElo'
+    "Carpet": "CarpetElo"
 }
 SURFACE_MOD: Dict[str, SurfaceModifier] = {
     "Lento (Clay Lento)":                     SurfaceModifier(-0.04, 0.60),
