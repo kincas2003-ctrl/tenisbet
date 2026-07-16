@@ -34,7 +34,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from rapidfuzz import process, fuzz
-
+import requests
 # Configuração de Logs
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
@@ -943,7 +943,34 @@ def calibration_table(df_bt: pd.DataFrame, n_bins: int = 10) -> pd.DataFrame:
     )
     g.columns = cols
     return g
+# ============================================================================
+# SECÇÃO 7 — RADAR DE MERCADO AO VIVO (The Odds API)
+# ============================================================================
 
+@st.cache_data(ttl="5m", show_spinner=False) # Cache de 5 mins para poupar a tua quota da API
+def fetch_live_odds(api_key: str, circuito: str) -> list:
+    """Vai buscar todos os jogos e odds ao vivo da The Odds API."""
+    sport_key = "tennis_atp" if "ATP" in circuito else "tennis_wta"
+    url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/"
+    
+    params = {
+        "apiKey": api_key,
+        "regions": "eu",        # Puxa casas europeias/globais
+        "markets": "h2h",       # Mercado de vencedor da partida
+        "oddsFormat": "decimal"
+    }
+    
+    try:
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        st.error(f"Erro ao ligar à API: Verifica se a tua chave está correta ou se esgotaste o limite. Detalhe: {e}")
+        return []
+
+def match_api_names(api_name: str, escolhas_validas: list) -> str:
+    """Corrige os nomes da API para baterem certo com a tua base de dados."""
+    return _fuzzy_match(api_name, escolhas_validas, threshold=80.0)
 
 # ============================================================================
 # SECÇÃO 6 — INTERFACE STREAMLIT
@@ -1067,8 +1094,8 @@ def render_results(bets: List[Bet], p1: str, p2: str, sims: dict) -> None:
         c3.metric("P2 Hold Rate",          f"{sims['p2_hold']:.1%}")
         c4.metric("Desvio Padrão Volatilidade", f"P1: {sims.get('p1_std', 'N/A')} | P2: {sims.get('p2_std', 'N/A')}")
 
-tab_agenda, tab_scanner, tab_manual, tab_csv, tab_calib = st.tabs(
-    ["📅 Agenda", "🤖 Auto-Scanner", "🔍 Calculadora Manual", "🚀 CSV em Massa", "📉 Calibração"]
+tab_agenda, tab_live, tab_scanner, tab_manual, tab_csv, tab_calib = st.tabs(
+    ["📅 Agenda", "📡 Radar ao Vivo", "🤖 Auto-Scanner", "🔍 Manual", "🚀 CSV", "📉 Calibração"]
 )
 
 with tab_agenda:
@@ -1091,7 +1118,71 @@ with tab_agenda:
                         st.session_state["agenda_p1"] = jogo["P1"]
                         st.session_state["agenda_p2"] = jogo["P2"]
                         st.success("✅ Vai à aba **Auto-Scanner** ou **Calculadora Manual**.")
-
+with tab_live:
+    st.header("📡 Radar de Valor em Tempo Real")
+    st.markdown("O sistema varre dezenas de casas de apostas de uma vez, pega na **melhor odd do mercado** para cada jogador, e cruza-a com o teu modelo matemático.")
+    
+    api_key = st.text_input("A tua chave da The Odds API", type="password")
+    
+    if st.button("Varrer Mercado", type="primary"):
+        if not api_key:
+            st.warning("Por favor, insere a chave da API em cima.")
+        else:
+            with st.spinner("A extrair dados das casas de apostas e a simular..."):
+                jogos_api = fetch_live_odds(api_key, circuito)
+                encontrados = []
+                
+                for jogo in jogos_api:
+                    p1_api, p2_api = jogo.get("home_team"), jogo.get("away_team")
+                    if not p1_api or not p2_api: continue
+                    
+                    # Converte nomes da API para os teus nomes
+                    p1_csv = match_api_names(p1_api, jogadores)
+                    p2_csv = match_api_names(p2_api, jogadores)
+                    
+                    if p1_csv in jogadores and p2_csv in jogadores and p1_csv != p2_csv:
+                        # Descobrir a odd mais alta em todo o mercado
+                        best_odd_p1, best_odd_p2 = 0.0, 0.0
+                        casa_p1, casa_p2 = "", ""
+                        
+                        for bookmaker in jogo.get("bookmakers", []):
+                            for market in bookmaker.get("markets", []):
+                                if market["key"] == "h2h":
+                                    for outcome in market["outcomes"]:
+                                        if outcome["name"] == p1_api and outcome["price"] > best_odd_p1:
+                                            best_odd_p1 = outcome["price"]
+                                            casa_p1 = bookmaker["title"]
+                                        elif outcome["name"] == p2_api and outcome["price"] > best_odd_p2:
+                                            best_odd_p2 = outcome["price"]
+                                            casa_p2 = bookmaker["title"]
+                        
+                        # Injetar as melhores odds no modelo
+                        sims = simulate(build_setup(p1_csv, p2_csv))
+                        mkts = _empty_mkts()
+                        if best_odd_p1 > 0: mkts["match_winner"]["P1"] = best_odd_p1
+                        if best_odd_p2 > 0: mkts["match_winner"]["P2"] = best_odd_p2
+                        
+                        bets = compute_markets(sims, mkts, p1_csv, p2_csv)
+                        top = best_bet(bets, limite_ev, odd_minima_rec)
+                        
+                        if top:
+                            nome_casa = casa_p1 if "P1" in top.market or p1_csv in top.market else casa_p2
+                            encontrados.append({
+                                "Encontro": f"{p1_csv} vs {p2_csv}",
+                                "Aposta": top.market.replace("P1", p1_csv).replace("P2", p2_csv),
+                                "Melhor Odd": f"{top.odd:.2f}",
+                                "Casa": nome_casa,
+                                "Prob Real": f"{top.prob:.1%}",
+                                "EV": f"+{top.ev:.1%}",
+                                "Aposta Sugerida": f"{top.stake_pct:.1%} da Banca"
+                            })
+                
+                if encontrados:
+                    st.success(f"🚨 Bingo! Encontradas {len(encontrados)} oportunidades de lucro no mercado atual.")
+                    df_live = pd.DataFrame(encontrados).sort_values("EV", ascending=False)
+                    st.dataframe(df_live, use_container_width=True)
+                else:
+                    st.info("O mercado está eficiente neste momento. Nenhuma odd bate o EV mínimo que definiste.")
 with tab_scanner:
     st.header("Auto-Scanner Inteligente (Copiar & Colar)")
     cs1, cs2 = st.columns(2)
