@@ -100,7 +100,19 @@ CIRCUIT: Dict[str, CircuitConfig] = {
         base_hold=0.635, hold_min=0.35, hold_max=0.85, base_aces_per_game=0.25
     ),
 }
-
+SURFACE_TO_ELO_COL = {
+    "Clay": "cElo",
+    "Grass": "gElo",
+    "Hard": "hElo",
+    "Terra batida": "cElo",
+    "Piso duro": "hElo",
+    "Grama": "gElo",
+    "Lento (Clay Lento)": "cElo",
+    "Médio-Lento (Clay Rápido / Hard Lento)": "cElo",
+    "Médio (Hard Normal)": "hElo",
+    "Rápido (Grass / Hard Rápido)": "gElo",
+    "Ultra Rápido (Indoor Rápido)": "hElo",
+}
 SURFACE_MOD: Dict[str, SurfaceModifier] = {
     "Lento (Clay Lento)":                     SurfaceModifier(-0.04, 0.60),
     "Médio-Lento (Clay Rápido / Hard Lento)": SurfaceModifier(-0.02, 0.80),
@@ -743,27 +755,28 @@ def _fuzzy_match(name: str, choices: List[str], threshold: float = 85.0) -> str:
     return name
 
 
-def _lookup_elo(nn: str, superficie: str, df_elos: pd.DataFrame, default: float) -> float:
-    if df_elos.empty or "_nn" not in df_elos.columns:
-        logging.warning(f"Ficheiro de Elos vazio. A usar default ({default}) para {nn}.")
+def lookup_elo(nn: str, superficie: str, df_elos: pd.DataFrame, default: float) -> float:
+    if df_elos.empty or "nn" not in df_elos.columns:
+        logging.warning(f"Ficheiro de Elos vazio. A usar default {default} para {nn}.")
         return default
-    
-    row = df_elos[df_elos["_nn"] == nn]
-    
+
+    row = df_elos[df_elos["nn"] == nn]
+
     if row.empty:
-        opcoes = df_elos["_nn"].tolist()
-        best_match = _fuzzy_match(nn, opcoes)
+        opcoes = df_elos["nn"].tolist()
+        best_match = fuzzy_match_name(nn, opcoes)
         if best_match != nn:
-            logging.info(f"Fuzzy match: '{nn}' corrigido para '{best_match}'")
-            row = df_elos[df_elos["_nn"] == best_match]
+            logging.info(f"Fuzzy match: {nn} corrigido para {best_match}")
+            row = df_elos[df_elos["nn"] == best_match]
         else:
-            logging.warning(f"Jogador '{nn}' não encontrado. A usar Elo default ({default}).")
+            logging.warning(f"Jogador {nn} não encontrado. A usar Elo default {default}.")
             return default
 
-    col = {"Clay": "cElo", "Grass": "gElo", "Hard": "hElo"}.get(superficie, "Elo")
+    col = SURFACE_TO_ELO_COL.get(superficie, "Elo")
+
     if col in row.columns and pd.notna(row[col].iloc[0]):
         return float(row[col].iloc[0])
-    
+
     return default
 
 def _calculate_time_weights(dates_series: pd.Series, decay_rate: float = MODEL.time_decay_rate) -> np.ndarray:
