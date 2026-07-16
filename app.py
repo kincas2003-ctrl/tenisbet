@@ -288,7 +288,8 @@ def simulate(setup: MatchSetup, n: int = MODEL.monte_carlo_n) -> dict:
             cur_p1h = _apply_momentum(p1h, won_prev_p1, MODEL.momentum_boost)
             cur_p2h = _apply_momentum(p2h, ~won_prev_p1, MODEL.momentum_boost)
 
-       g1, g2 = _sim_set(n, cur_p1h, cur_p2h, setup.p1.hold_std, setup.p2.hold_std, rng)
+        # O alinhamento correto (exatamente 8 espaços da margem)
+        g1, g2 = _sim_set(n, cur_p1h, cur_p2h, setup.p1.hold_std, setup.p2.hold_std, rng)
         games_in_set = g1 + g2
 
         srv1 = (games_in_set + 1) // 2
@@ -322,8 +323,9 @@ def simulate(setup: MatchSetup, n: int = MODEL.monte_carlo_n) -> dict:
         "aces_p1": aces1, "aces_p2": aces2,
         "match_prob": match_prob,
         "p1_hold": p1h, "p2_hold": p2h,
+        "p1_std": setup.p1.hold_std, 
+        "p2_std": setup.p2.hold_std  
     }
-
 
 # ============================================================================
 # SECÇÃO 3 — MERCADOS (EV e Kelly)
