@@ -1172,10 +1172,13 @@ PASTA_DADOS = "dados_historicos"
 if not os.path.exists(PASTA_DADOS):
     os.makedirs(PASTA_DADOS)
 
+PASTA_DADOS = "dados_historicos"
+if not os.path.exists(PASTA_DADOS):
+    os.makedirs(PASTA_DADOS)
+
 st.sidebar.header("🔄 Pipeline de Dados (Data Center)")
 st.sidebar.markdown(f"Os teus ficheiros ficam guardados localmente na pasta `{PASTA_DADOS}`.")
 
-# 2. Opções de Processamento configuráveis
 opcoes_pipeline = st.sidebar.multiselect(
     "Opções de Cálculo a aplicar:",
     [
@@ -1191,7 +1194,6 @@ opcoes_pipeline = st.sidebar.multiselect(
 
 @st.cache_data(show_spinner=False)
 def process_multiple_csvs(file_paths, opcoes) -> pd.DataFrame:
-    """Lê os ficheiros DIRETAMENTE do disco rígido."""
     dfs = []
     for path in file_paths:
         try:
@@ -1222,7 +1224,6 @@ def process_multiple_csvs(file_paths, opcoes) -> pd.DataFrame:
         return pd.concat(dfs, ignore_index=True)
     return pd.DataFrame()
 
-# 3. Upload para gravar no disco
 ficheiros_upload = st.sidebar.file_uploader(
     "Adicionar NOVOS ficheiros ao arquivo", 
     type=["csv"], 
@@ -1236,7 +1237,6 @@ if ficheiros_upload:
             f_out.write(f.getbuffer())
     st.sidebar.success(f"✅ {len(ficheiros_upload)} ficheiros guardados permanentemente!")
 
-# 4. Descobrir o que já está guardado na pasta
 ficheiros_locais = [os.path.join(PASTA_DADOS, f) for f in os.listdir(PASTA_DADOS) if f.endswith('.csv')]
 
 if ficheiros_locais:
