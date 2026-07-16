@@ -1172,6 +1172,15 @@ PASTA_DADOS = "dados_historicos"
 if not os.path.exists(PASTA_DADOS):
     os.makedirs(PASTA_DADOS)
 
+import os
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+# ============================================================================
+# SECÇÃO - PIPELINE DE DADOS (DATA CENTER LOCAL)
+# ============================================================================
+
 PASTA_DADOS = "dados_historicos"
 if not os.path.exists(PASTA_DADOS):
     os.makedirs(PASTA_DADOS)
