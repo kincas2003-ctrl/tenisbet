@@ -947,26 +947,50 @@ def calibration_table(df_bt: pd.DataFrame, n_bins: int = 10) -> pd.DataFrame:
 # SECÇÃO 7 — RADAR DE MERCADO AO VIVO (The Odds API)
 # ============================================================================
 
-@st.cache_data(ttl="5m", show_spinner=False) # Cache de 5 mins para poupar a tua quota da API
+@st.cache_data(ttl="5m", show_spinner=False)
 def fetch_live_odds(api_key: str, circuito: str) -> list:
     """Vai buscar todos os jogos e odds ao vivo da The Odds API."""
-    sport_key = "tennis_atp" if "ATP" in circuito else "tennis_wta"
-    url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/"
     
-    params = {
-        "apiKey": api_key,
-        "regions": "eu",        # Puxa casas europeias/globais
-        "markets": "h2h",       # Mercado de vencedor da partida
-        "oddsFormat": "decimal"
-    }
+    # 1. Definir o prefixo correto consoante o circuito
+    prefix = "tennis_atp" if "ATP" in circuito else "tennis_wta"
     
+    # 2. Descobrir quais os torneios ativos neste momento
+    sports_url = "https://api.the-odds-api.com/v4/sports/"
     try:
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        return response.json()
+        sports_resp = requests.get(sports_url, params={"apiKey": api_key})
+        sports_resp.raise_for_status()
+        active_sports = sports_resp.json()
     except Exception as e:
-        st.error(f"Erro ao ligar à API: Verifica se a tua chave está correta ou se esgotaste o limite. Detalhe: {e}")
+        st.error(f"Erro ao obter a lista de torneios. Verifica a chave API. Detalhe: {e}")
         return []
+    
+    # 3. Filtrar apenas as chaves de torneios de ténis correspondentes ao circuito (ex: tennis_atp_wimbledon)
+    active_keys = [s["key"] for s in active_sports if str(s["key"]).startswith(prefix)]
+    
+    if not active_keys:
+        st.warning(f"Não há torneios ativos de {circuito} neste exato momento na The Odds API.")
+        return []
+
+    # 4. Varrer cada torneio ativo e agregar todos os jogos numa única lista
+    all_games = []
+    for sport_key in active_keys:
+        odds_url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/"
+        params = {
+            "apiKey": api_key,
+            "regions": "eu",        # Puxa casas europeias/globais (Betclic, Betano, Pinnacle, etc.)
+            "markets": "h2h",       # Mercado de vencedor da partida
+            "oddsFormat": "decimal"
+        }
+        
+        try:
+            resp = requests.get(odds_url, params=params)
+            resp.raise_for_status()
+            all_games.extend(resp.json())
+        except Exception as e:
+            # Em vez de parar tudo, ignoramos se um torneio específico falhar
+            pass
+            
+    return all_games
 
 def match_api_names(api_name: str, escolhas_validas: list) -> str:
     """Corrige os nomes da API para baterem certo com a tua base de dados."""
