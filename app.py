@@ -756,18 +756,23 @@ def _fuzzy_match(name: str, choices: List[str], threshold: float = 85.0) -> str:
 
 
 def lookup_elo(nn: str, superficie: str, df_elos: pd.DataFrame, default: float) -> float:
-    if df_elos.empty or "nn" not in df_elos.columns:
+    # 1. CORREÇÃO: Mudar "nn" para "_nn"
+    if df_elos.empty or "_nn" not in df_elos.columns:
         logging.warning(f"Ficheiro de Elos vazio. A usar default {default} para {nn}.")
         return default
 
-    row = df_elos[df_elos["nn"] == nn]
+    # 2. CORREÇÃO: Mudar "nn" para "_nn"
+    row = df_elos[df_elos["_nn"] == nn]
 
     if row.empty:
-        opcoes = df_elos["nn"].tolist()
-        best_match = fuzzy_match_name(nn, opcoes)
+        # 3. CORREÇÃO: Mudar "nn" para "_nn"
+        opcoes = df_elos["_nn"].tolist()
+        
+        # 4. CORREÇÃO: Chamar _fuzzy_match em vez de fuzzy_match_name
+        best_match = _fuzzy_match(nn, opcoes) 
         if best_match != nn:
             logging.info(f"Fuzzy match: {nn} corrigido para {best_match}")
-            row = df_elos[df_elos["nn"] == best_match]
+            row = df_elos[df_elos["_nn"] == best_match]
         else:
             logging.warning(f"Jogador {nn} não encontrado. A usar Elo default {default}.")
             return default
