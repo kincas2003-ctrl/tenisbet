@@ -38,7 +38,7 @@ from rapidfuzz import process, fuzz
 import requests
 import matplotlib.pyplot as plt
 
-Configuração de Logs,
+#Configuração de Logs,
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
 PASTA_DADOS = "dados_historicos"
