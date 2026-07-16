@@ -29,7 +29,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Union
-
+import sqlite3
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -1000,7 +1000,69 @@ def fetch_live_odds(api_key: str, circuito: str) -> list:
 def match_api_names(api_name: str, escolhas_validas: list) -> str:
     """Corrige os nomes da API para baterem certo com a tua base de dados."""
     return _fuzzy_match(api_name, escolhas_validas, threshold=80.0)
+# ============================================================================
+# SECÇÃO 8 — GESTÃO DE BANCA E HISTÓRICO (SQLite)
+# ============================================================================
 
+def init_db():
+    """Inicializa a base de dados e cria a tabela se não existir."""
+    conn = sqlite3.connect("quantbet.db")
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS bet_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            data_registo TEXT,
+            encontro TEXT,
+            mercado TEXT,
+            odd REAL,
+            stake_pct REAL,
+            ev_projetado REAL,
+            status TEXT DEFAULT 'Pendente',
+            lucro_real REAL DEFAULT 0.0
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def add_bet(encontro: str, mercado: str, odd: float, stake_pct: float, ev: float):
+    """Regista uma nova aposta sugerida pelo modelo."""
+    conn = sqlite3.connect("quantbet.db")
+    c = conn.cursor()
+    hoje = datetime.now().strftime("%Y-%m-%d %H:%M")
+    c.execute('''
+        INSERT INTO bet_history (data_registo, encontro, mercado, odd, stake_pct, ev_projetado)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (hoje, encontro, mercado, odd, stake_pct, ev))
+    conn.commit()
+    conn.close()
+
+def get_bet_history() -> pd.DataFrame:
+    """Recupera o histórico completo de apostas."""
+    conn = sqlite3.connect("quantbet.db")
+    df_bets = pd.read_sql_query("SELECT * FROM bet_history ORDER BY id DESC", conn)
+    conn.close()
+    return df_bets
+
+def resolve_bet(bet_id: int, status: str, odd: float, stake_pct: float):
+    """Atualiza o resultado de uma aposta (Ganha/Perdida) e calcula o lucro."""
+    lucro = 0.0
+    if status == 'Ganha':
+        lucro = stake_pct * (odd - 1.0)
+    elif status == 'Perdida':
+        lucro = -stake_pct
+
+    conn = sqlite3.connect("quantbet.db")
+    c = conn.cursor()
+    c.execute('''
+        UPDATE bet_history 
+        SET status = ?, lucro_real = ? 
+        WHERE id = ?
+    ''', (status, lucro, bet_id))
+    conn.commit()
+    conn.close()
+
+# Inicializa a base de dados imediatamente ao carregar o script
+init_db()
 # ============================================================================
 # SECÇÃO 6 — INTERFACE STREAMLIT
 # ============================================================================
@@ -1094,11 +1156,23 @@ def render_results(bets: List[Bet], p1: str, p2: str, sims: dict) -> None:
         
         for i, bet in enumerate(portfolio):
             total_stake += bet.stake_pct
-            cols[i].success(
-                f"**{bet.market}**\n\n"
-                f"Odd: `{bet.odd:.2f}` | Prob: `{bet.prob:.1%}`\n\n"
-                f"📈 EV: `+{bet.ev:.1%}` | ⚖️ Stake: **{bet.stake_pct:.1%}**"
-            )
+            with cols[i]:
+                st.success(
+                    f"**{bet.market}**\n\n"
+                    f"Odd: `{bet.odd:.2f}` | Prob: `{bet.prob:.1%}`\n\n"
+                    f"📈 EV: `+{bet.ev:.1%}` | ⚖️ Stake: **{bet.stake_pct:.1%}**"
+                )
+                
+                # Botão para registar a aposta na Base de Dados
+                if st.button("Gravar Aposta 💾", key=f"gravar_{p1}_{p2}_{bet.market}"):
+                    add_bet(
+                        encontro=f"{p1} vs {p2}",
+                        mercado=bet.market,
+                        odd=bet.odd,
+                        stake_pct=bet.stake_pct,
+                        ev=bet.ev
+                    )
+                    st.toast("✅ Aposta registada com sucesso na tua Banca!")
             
         st.caption(f"**Exposição Total no Jogo:** {total_stake:.1%} da Banca")
         st.markdown("---")
@@ -1123,8 +1197,8 @@ def render_results(bets: List[Bet], p1: str, p2: str, sims: dict) -> None:
         c3.metric("P2 Hold Rate",          f"{sims['p2_hold']:.1%}")
         c4.metric("Desvio Padrão Volatilidade", f"P1: {sims.get('p1_std', 'N/A')} | P2: {sims.get('p2_std', 'N/A')}")
 
-tab_agenda, tab_live, tab_scanner, tab_manual, tab_csv, tab_calib = st.tabs(
-    ["📅 Agenda", "📡 Radar ao Vivo", "🤖 Auto-Scanner", "🔍 Manual", "🚀 CSV", "📉 Calibração"]
+tab_agenda, tab_live, tab_scanner, tab_manual, tab_csv, tab_calib, tab_banca = st.tabs(
+    ["📅 Agenda", "📡 Radar", "🤖 Auto-Scanner", "🔍 Manual", "🚀 CSV", "📉 Calibração", "💰 Gestão de Banca"]
 )
 
 with tab_agenda:
@@ -1363,3 +1437,67 @@ with tab_calib:
                 if not tabela.empty:
                     chart_df = tabela.set_index("Bucket")[["Prob. Média Prevista", "Taxa Real de Vitórias"]]
                     st.line_chart(chart_df)
+                    with tab_banca:
+    st.header("💰 Gestão de Banca e Tracking Real")
+    st.markdown("Monitoriza a performance real das tuas recomendações no mercado.")
+    
+    df_history = get_bet_history()
+    
+    if df_history.empty:
+        st.info("Ainda não registaste nenhuma aposta. Usa os scanners para encontrar valor e clica em 'Gravar Aposta'.")
+    else:
+        # Métricas Globais do Portfólio
+        df_resolvidas = df_history[df_history["status"] != "Pendente"]
+        
+        total_apostas = len(df_resolvidas)
+        lucro_total = df_resolvidas["lucro_real"].sum() * 100 # Multiplica por 100 para mostrar em % de Banca
+        volume_investido = df_resolvidas["stake_pct"].sum() * 100
+        
+        roi = (lucro_total / volume_investido) * 100 if volume_investido > 0 else 0.0
+        
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Apostas Resolvidas", total_apostas)
+        c2.metric("Volume Investido", f"{volume_investido:.2f} U")
+        
+        cor_lucro = "normal" if lucro_total >= 0 else "inverse"
+        c3.metric("Lucro Líquido", f"{lucro_total:.2f} U", delta_color=cor_lucro)
+        c4.metric("ROI / Yield Real", f"{roi:.2f}%", delta_color=cor_lucro)
+        
+        st.markdown("---")
+        
+        # Resolução de Apostas Pendentes
+        st.subheader("⏳ Resolver Apostas Pendentes")
+        df_pendentes = df_history[df_history["status"] == "Pendente"]
+        
+        if not df_pendentes.empty:
+            for _, row in df_pendentes.iterrows():
+                cc1, cc2, cc3 = st.columns([4, 2, 2])
+                cc1.markdown(f"**{row['encontro']}** | {row['mercado']} (Odd: {row['odd']} | Stake: {row['stake_pct']:.2%})")
+                
+                with cc2:
+                    if st.button("✅ Ganha", key=f"win_{row['id']}"):
+                        resolve_bet(row['id'], "Ganha", row['odd'], row['stake_pct'])
+                        st.rerun()
+                with cc3:
+                    if st.button("❌ Perdida", key=f"loss_{row['id']}"):
+                        resolve_bet(row['id'], "Perdida", row['odd'], row['stake_pct'])
+                        st.rerun()
+        else:
+            st.success("Não tens apostas pendentes!")
+            
+        st.markdown("---")
+        
+        # Tabela do Histórico Completo
+        st.subheader("📖 Histórico Completo")
+        
+        # Formatar a tabela para visualização bonita
+        df_view = df_history.copy()
+        df_view["stake_pct"] = (df_view["stake_pct"] * 100).map("{:.2f}%".format)
+        df_view["ev_projetado"] = (df_view["ev_projetado"] * 100).map("+{:.1f}%".format)
+        df_view["lucro_real"] = df_view["lucro_real"].map("{:.3f} U".format)
+        
+        st.dataframe(
+            df_view[["id", "data_registo", "encontro", "mercado", "odd", "stake_pct", "ev_projetado", "status", "lucro_real"]],
+            use_container_width=True,
+            hide_index=True
+        )
