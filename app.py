@@ -636,53 +636,54 @@ def load_ml_model():
     return None
 @st.cache_data(ttl="12h", show_spinner=False)
 def sync_live_data(circuito: str, start_year: int = datetime.now().year) -> pd.DataFrame:
-    """Vai buscar os resultados mais recentes diretamente à base de dados global (Sackmann)."""
+    """Vai buscar os resultados mais recentes diretamente à base de dados global (Sackmann) via Pandas."""
     prefix = "atp" if "ATP" in circuito else "wta"
     
     ano_atual = start_year
-    response = None
-    
-    # O nosso "disfarce" para o GitHub não nos bloquear
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
+    df_live = pd.DataFrame()
     
     while ano_atual >= 2022:
-        url = f"https://raw.githubusercontent.com/JeffSackmann/tennis_{prefix}/master/{prefix}_matches_{ano_atual}.csv"
+        # Prepara os dois formatos possíveis de URL no GitHub (master vs main)
+        url_master = f"https://raw.githubusercontent.com/JeffSackmann/tennis_{prefix}/master/{prefix}_matches_{ano_atual}.csv"
+        url_main = f"https://raw.githubusercontent.com/JeffSackmann/tennis_{prefix}/main/{prefix}_matches_{ano_atual}.csv"
+        
         try:
-            # Passamos o header na chamada
-            response = requests.get(url, headers=headers, timeout=10)
-            
-            if response.status_code == 200:
-                st.info(f"✅ Últimos dados encontrados no GitHub correspondem ao ano {ano_atual}. Sincronização concluída!")
+            # O Pandas consegue ler o CSV diretamente do link web sem usar o "requests"
+            try:
+                df_live = pd.read_csv(url_master)
+            except Exception:
+                # Se falhar no "master", tenta na branch "main"
+                df_live = pd.read_csv(url_main)
+                
+            if not df_live.empty:
+                st.info(f"✅ Dados ao vivo de {ano_atual} sincronizados com sucesso a partir da cloud!")
                 break
-            else:
-                st.warning(f"⚠️ Ficheiro de {ano_atual} inacessível (Erro {response.status_code}). A tentar {ano_atual - 1}...")
-                ano_atual -= 1
+                
         except Exception as e:
-            st.warning(f"Erro de rede ao tentar {ano_atual}: {e}")
+            st.warning(f"⚠️ Ano {ano_atual} inacessível no GitHub. A tentar {ano_atual - 1}...")
             ano_atual -= 1
             
-    if response is None or response.status_code != 200:
-        st.error("❌ Não foi possível encontrar ficheiros recentes no GitHub. A usar dados locais.")
+    if df_live.empty:
+        st.error("❌ Não foi possível descarregar dados de nenhum ano recente. A usar cache local.")
         return pd.DataFrame()
         
     try:
-        df_live = pd.read_csv(io.StringIO(response.text))
-        
+        # Limpeza e compatibilidade com o teu formato existente
         df_live.columns = [str(c).lower().strip() for c in df_live.columns]
         
+        # Normalizar os nomes dos jogadores
         for col, norm in [("winner_name", "_wn"), ("loser_name", "_on")]:
             if col in df_live.columns:
                 df_live[norm] = df_live[col].astype(str).str.casefold().str.strip()
         
+        # Calcular Hold Rates Reais (se houver dados de serviço)
         if "w_svgms" in df_live.columns:
             df_live["w_hold_pct"] = (df_live["w_svgms"] - df_live.get("l_bpconverted", 0)) / df_live["w_svgms"]
             df_live["l_hold_pct"] = (df_live["l_svgms"] - df_live.get("w_bpconverted", 0)) / df_live["l_svgms"]
             
         return df_live
     except Exception as e:
-        st.error(f"Falha ao processar o ficheiro descarregado: {e}")
+        st.error(f"Falha ao processar a estrutura do ficheiro descarregado: {e}")
         return pd.DataFrame()
 
 @st.cache_data(ttl="1h", show_spinner=False)
