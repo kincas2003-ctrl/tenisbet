@@ -2,6 +2,16 @@
 QuantBet OS — ficheiro único para Streamlit Cloud.
 Toda a lógica (config, simulação, mercados, parser, dados) está aqui,
 organizada em secções claramente separadas.
+
+v2 — Melhorias adicionadas:
+  1. Hold rate específico por superfície (com shrinkage bayesiano para a média global)
+  2. Forma recente ponderada pelo Elo do adversário (vencer o nº1 pesa mais que vencer o 200º)
+  3. Fadiga modelada de forma não-linear (efeito quase neutro em baixo volume, acelera acima do limiar)
+  4. Mapeamento hold-rate em espaço logit (sigmoidal), não linear — colapsa perto dos limites físicos
+  5. Momentum entre sets (ganhar um set altera a prob. de hold no set seguinte)
+  6. Módulo de calibração histórica (Brier Score + reliability diagram)
+  7. Slider manual de "Contexto" (altitude / torneio / jet lag) como proxy honesto,
+     enquanto não existirem dados dedicados a estas variáveis
 """
 
 import os
@@ -9,7 +19,7 @@ import re
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -50,6 +60,17 @@ class ModelConfig:
     kelly_fraction: float    = 0.10
     kelly_max: float         = 0.035
     kelly_min: float         = 0.005
+
+    # ---- Novos parâmetros (v2) --------------------------------------------
+    hold_shrink_k: float     = 20.0   # nº de jogos na superfície para "peso pleno" no shrinkage
+    form_elo_scale: float    = 400.0  # escala tipo-Elo para pesar vitórias pela força do adversário
+    form_weight_min: float   = 0.3    # peso mínimo de uma vitória (adversário muito mais fraco)
+    form_weight_max: float   = 3.0    # peso máximo de uma vitória (adversário muito mais forte)
+    fatigue_threshold: float = 6.0    # jogos/semana considerados "carga normal"
+    fatigue_exponent: float  = 1.8    # expoente de aceleração acima do limiar
+    hold_logit_scale: float  = 3.0    # ganho do deslocamento em espaço logit (hold rate)
+    momentum_boost: float    = 0.10   # ~8-12% de boost de hold para quem ganhou o set anterior
+    context_weight: float    = 0.01   # peso do ajuste manual de contexto (altitude/torneio/jetlag)
 
 
 CIRCUIT: Dict[str, CircuitConfig] = {
@@ -94,6 +115,7 @@ class MatchSetup:
     form_adj: int
     fatigue_adj: int
     h2h: Tuple[int, int]
+    context_adj: int = 0     # ajuste manual: altitude / tier do torneio / jet lag
     ml_model: object = None
 
 
@@ -110,6 +132,20 @@ def _h2h_adj(h2h: Tuple[int, int]) -> float:
     posterior = (w1 + MODEL.h2h_prior / 2) / (total + MODEL.h2h_prior)
     raw = (posterior - 0.5) * MODEL.h2h_weight * total
     return float(np.clip(raw, -MODEL.h2h_max, MODEL.h2h_max))
+
+
+def _fatigue_nonlinear(games: float) -> float:
+    """
+    Converte 'jogos disputados na última semana' numa carga de fadiga não-linear.
+    A literatura mostra que o efeito não é proporcional ao nº de jogos: um volume
+    normal (poucos jogos) é quase neutro, mas a partir de um limiar o desgaste
+    acelera (aproxima o efeito real de vários jogos/sets seguidos em dias
+    consecutivos, sem precisarmos ainda de uma coluna dedicada a "games jogados").
+    """
+    if games <= MODEL.fatigue_threshold:
+        return games * 0.5
+    excess = games - MODEL.fatigue_threshold
+    return MODEL.fatigue_threshold * 0.5 + excess ** MODEL.fatigue_exponent
 
 
 def _compute_match_prob(setup: MatchSetup) -> float:
@@ -129,23 +165,71 @@ def _compute_match_prob(setup: MatchSetup) -> float:
 
     prob += ((setup.p1.recent_form - setup.p2.recent_form)
              + setup.form_adj * MODEL.form_adj_scale) * MODEL.form_weight
-    prob -= (((setup.p1.fatigue - setup.p2.fatigue)
-              + setup.fatigue_adj * MODEL.fatigue_adj_scale)
+
+    fatigue_diff = _fatigue_nonlinear(setup.p1.fatigue) - _fatigue_nonlinear(setup.p2.fatigue)
+    prob -= ((fatigue_diff + setup.fatigue_adj * MODEL.fatigue_adj_scale)
              / 100.0 * MODEL.fatigue_weight)
+
     prob += _h2h_adj(setup.h2h)
+    prob += setup.context_adj * MODEL.context_weight
+
     return float(np.clip(prob, 0.05, 0.95))
 
 
+def _logit(p: float, lo: float, hi: float) -> float:
+    x = np.clip((p - lo) / (hi - lo), 1e-6, 1 - 1e-6)
+    return float(np.log(x / (1 - x)))
+
+
+def _inv_logit(z: float, lo: float, hi: float) -> float:
+    x = 1.0 / (1.0 + np.exp(-z))
+    return lo + x * (hi - lo)
+
+
 def _hold_probs(prob: float, cfg: CircuitConfig, mod: SurfaceModifier) -> Tuple[float, float]:
-    base = cfg.base_hold + mod.hold_delta
-    shift = (prob - 0.5) * MODEL.game_prob_scale
-    p1h = float(np.clip(base + shift, cfg.hold_min, cfg.hold_max))
-    p2h = float(np.clip(base - shift, cfg.hold_min, cfg.hold_max))
+    """
+    Mapeia a probabilidade de vitória do encontro para hold rates de serviço.
+
+    Em vez de um deslocamento linear (`shift = (prob-0.5) * k`), trabalha em
+    espaço logit: a relação qualidade-do-jogador -> hold rate não é linear,
+    é sigmoidal — a diferença de hold colapsa perto dos limites fisiológicos
+    (hold_min / hold_max), tal como acontece na realidade (um jogador muito
+    melhor não continua a ganhar hold rate proporcionalmente perto de 95%).
+    """
+    base = float(np.clip(cfg.base_hold + mod.hold_delta, cfg.hold_min, cfg.hold_max))
+    z_base = _logit(base, cfg.hold_min, cfg.hold_max)
+    delta = (prob - 0.5) * MODEL.game_prob_scale * MODEL.hold_logit_scale
+
+    p1h = float(np.clip(_inv_logit(z_base + delta / 2, cfg.hold_min, cfg.hold_max),
+                         cfg.hold_min, cfg.hold_max))
+    p2h = float(np.clip(_inv_logit(z_base - delta / 2, cfg.hold_min, cfg.hold_max),
+                         cfg.hold_min, cfg.hold_max))
     return p1h, p2h
 
 
-def _sim_set(n: int, p1h: float, p2h: float, rng: np.random.Generator) -> Tuple[np.ndarray, np.ndarray]:
-    """Simula N sets em paralelo com lógica de terminação vectorizada."""
+def _apply_momentum(base_h: Union[float, np.ndarray], won_prev: np.ndarray, boost: float) -> np.ndarray:
+    """
+    Ajusta o hold rate consoante o resultado do set anterior.
+    Ganhar o set anterior aumenta a prob. de vitória no seguinte em ~8-12%
+    acima do previsto pelo Elo (efeito de momentum documentado empiricamente).
+    """
+    boosted = np.clip(base_h + boost * (1.0 - base_h), 0.0, 1.0)
+    depressed = np.clip(base_h - boost * base_h, 0.0, 1.0)
+    return np.where(won_prev, boosted, depressed)
+
+
+def _sim_set(
+    n: int,
+    p1h: Union[float, np.ndarray],
+    p2h: Union[float, np.ndarray],
+    rng: np.random.Generator,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Simula N sets em paralelo com lógica de terminação vectorizada.
+    p1h/p2h podem ser escalares (mesma taxa para todas as simulações) ou
+    arrays de forma (n,) — usado para aplicar momentum por-simulação
+    consoante o resultado do set anterior nessa simulação específica.
+    """
     g1 = np.zeros(n, dtype=np.int32)
     g2 = np.zeros(n, dtype=np.int32)
     active = np.ones(n, dtype=bool)
@@ -172,6 +256,8 @@ def simulate(setup: MatchSetup, n: int = MODEL.monte_carlo_n) -> dict:
     """
     Simula N encontros em paralelo.
     20-50× mais rápido que a versão original em Python puro.
+    Inclui momentum entre sets: o resultado de cada set ajusta o hold rate
+    efectivo do set seguinte, por simulação.
     """
     rng = np.random.default_rng(42)
     match_prob = _compute_match_prob(setup)
@@ -190,12 +276,22 @@ def simulate(setup: MatchSetup, n: int = MODEL.monte_carlo_n) -> dict:
     aces2    = np.zeros(n, dtype=np.float32)
     set_data = []
 
+    prev_g1: Optional[np.ndarray] = None
+    prev_g2: Optional[np.ndarray] = None
+
     for s in range(max_sets):
         playing = (p1_sets < setup.sets_to_win) & (p2_sets < setup.sets_to_win)
         if not playing.any():
             break
 
-        g1, g2 = _sim_set(n, p1h, p2h, rng)
+        if prev_g1 is None:
+            cur_p1h, cur_p2h = p1h, p2h
+        else:
+            won_prev_p1 = prev_g1 > prev_g2
+            cur_p1h = _apply_momentum(p1h, won_prev_p1, MODEL.momentum_boost)
+            cur_p2h = _apply_momentum(p2h, ~won_prev_p1, MODEL.momentum_boost)
+
+        g1, g2 = _sim_set(n, cur_p1h, cur_p2h, rng)
         games_in_set = g1 + g2
 
         # Aces: escalados pelo número real de jogos de serviço
@@ -214,6 +310,8 @@ def simulate(setup: MatchSetup, n: int = MODEL.monte_carlo_n) -> dict:
 
         if s < 2:
             set_data.append((np.where(playing, g1, 0), np.where(playing, g2, 0)))
+
+        prev_g1, prev_g2 = g1, g2
 
     while len(set_data) < 2:
         set_data.append((np.zeros(n, dtype=np.int32), np.zeros(n, dtype=np.int32)))
@@ -510,35 +608,72 @@ def load_agenda() -> pd.DataFrame:
     })
 
 
+def _lookup_elo(nn: str, superficie: str, df_elos: pd.DataFrame, default: float) -> float:
+    """Elo do jogador (por nome já normalizado) na superfície indicada, com fallback."""
+    if df_elos.empty or "_nn" not in df_elos.columns:
+        return default
+    row = df_elos[df_elos["_nn"] == nn]
+    if row.empty:
+        return default
+    col = {"Clay": "cElo", "Grass": "gElo", "Hard": "hElo"}.get(superficie, "Elo")
+    if col in row.columns:
+        return float(row[col].iloc[0])
+    return default
+
+
 def get_stats(nome: str, superficie: str, circuito: str, df: pd.DataFrame, df_elos: pd.DataFrame) -> PlayerStats:
     cfg = CIRCUIT[circuito]
     nn = str(nome).casefold().strip()
 
-    elo = cfg.default_elo
-    if "_nn" in df_elos.columns and not df_elos.empty:
-        row = df_elos[df_elos["_nn"] == nn]
-        if not row.empty:
-            col = {"Clay": "cElo", "Grass": "gElo", "Hard": "hElo"}.get(superficie, "Elo")
-            if col in row.columns:
-                elo = float(row[col].iloc[0])
+    elo = _lookup_elo(nn, superficie, df_elos, cfg.default_elo)
 
+    # --- Hold rate: específico da superfície, com shrinkage bayesiano ------
+    # Um jogador pode ter 78% de hold em geral mas 72% no clay. Usamos o valor
+    # específico da superfície, encolhido em direcção à média global consoante
+    # o nº de jogos disponíveis nessa superfície (evita overfit em amostras pequenas).
     hold = cfg.base_hold
     if "_pn" in df.columns and "hold_percentage" in df.columns:
-        m = df[df["_pn"] == nn]
-        if not m.empty:
-            hold = float(m["hold_percentage"].mean())
+        m_all = df[df["_pn"] == nn]
+        if not m_all.empty:
+            hold_global = float(m_all["hold_percentage"].mean())
+            if "surface" in df.columns:
+                m_surf = m_all[m_all["surface"] == superficie]
+            else:
+                m_surf = m_all.iloc[0:0]
+            if not m_surf.empty:
+                hold_surf = float(m_surf["hold_percentage"].mean())
+                n_surf = len(m_surf)
+                w = n_surf / (n_surf + MODEL.hold_shrink_k)
+                hold = w * hold_surf + (1 - w) * hold_global
+            else:
+                hold = hold_global
 
+    # --- Fadiga (valor bruto; a não-linearidade é aplicada em _fatigue_nonlinear) ---
     fatigue = 0.0
     if "_pn" in df.columns and "games_played_last_week" in df.columns:
         m = df[df["_pn"] == nn]
         if not m.empty:
             fatigue = float(m["games_played_last_week"].iloc[-1])
 
+    # --- Forma recente ponderada pelo Elo do adversário --------------------
+    # Uma vitória contra o top 10 vale mais do que uma vitória contra o 200º.
     form = 0.5
-    if "_pn" in df.columns and "_wn" in df.columns:
+    if "_pn" in df.columns and "_wn" in df.columns and "_on" in df.columns:
         m = df[df["_pn"] == nn].tail(5)
         if not m.empty:
-            form = float((m["_wn"] == nn).sum() / len(m))
+            weights, wins = [], []
+            for _, row in m.iterrows():
+                opp_nn = row["_on"]
+                opp_elo = _lookup_elo(opp_nn, superficie, df_elos, cfg.default_elo)
+                w = float(np.clip(
+                    2.0 ** ((opp_elo - cfg.default_elo) / MODEL.form_elo_scale),
+                    MODEL.form_weight_min, MODEL.form_weight_max,
+                ))
+                weights.append(w)
+                wins.append(1.0 if row["_wn"] == nn else 0.0)
+            weights_arr = np.array(weights)
+            wins_arr = np.array(wins)
+            form = float(np.sum(weights_arr * wins_arr) / np.sum(weights_arr))
 
     return PlayerStats(elo=elo, hold_rate=hold, fatigue=fatigue, recent_form=form)
 
@@ -556,6 +691,76 @@ def get_h2h(p1: str, p2: str, df: pd.DataFrame) -> Tuple[int, int]:
     if h2h.empty or "_wn" not in df.columns:
         return 0, 0
     return int((h2h["_wn"] == n1).sum()), int((h2h["_wn"] == n2).sum())
+
+
+# ----------------------------------------------------------------------------
+# Calibração / Backtesting histórico
+# ----------------------------------------------------------------------------
+
+@st.cache_data
+def run_backtest(circuito: str, n_sample: int = 3000) -> pd.DataFrame:
+    """
+    Gera pares (probabilidade prevista, resultado real) para jogos históricos,
+    usando o modelo Elo puro do sistema (P1 = "player" na linha, P2 = "opponent").
+
+    AVISO METODOLÓGICO: usa o snapshot ACTUAL de Elo como proxy do valor à
+    data de cada jogo (não existe histórico de Elo point-in-time guardado).
+    Para jogos antigos isto introduz algum lookahead bias — os números aqui
+    servem como primeiro sinal de honestidade do modelo, não como um
+    backtest walk-forward puro. Para rigor total, seria preciso guardar
+    snapshots de Elo por data e reconstruir o estado "à data do jogo".
+    """
+    df = load_match_data()
+    df_elos = load_elos(circuito)
+    cfg = CIRCUIT[circuito]
+
+    if not {"_pn", "_on", "_wn"}.issubset(df.columns):
+        return pd.DataFrame(columns=["prob", "actual"])
+
+    rows = df.dropna(subset=["_pn", "_on", "_wn"])
+    if len(rows) > n_sample:
+        rows = rows.sample(n_sample, random_state=42)
+
+    preds, actuals = [], []
+    for _, r in rows.iterrows():
+        p1n, p2n = r["_pn"], r["_on"]
+        surf = r["surface"] if ("surface" in r and pd.notna(r["surface"])) else "Hard"
+        e1 = _lookup_elo(p1n, surf, df_elos, cfg.default_elo)
+        e2 = _lookup_elo(p2n, surf, df_elos, cfg.default_elo)
+        prob = _elo_prob(e1 - e2)
+        preds.append(prob)
+        actuals.append(1.0 if r["_wn"] == p1n else 0.0)
+
+    return pd.DataFrame({"prob": preds, "actual": actuals})
+
+
+def brier_score(df_bt: pd.DataFrame) -> float:
+    """0 = previsões perfeitas; 0.25 = tão bom como prever sempre 50/50."""
+    if df_bt.empty:
+        return float("nan")
+    return float(np.mean((df_bt["prob"] - df_bt["actual"]) ** 2))
+
+
+def calibration_table(df_bt: pd.DataFrame, n_bins: int = 10) -> pd.DataFrame:
+    """
+    Reliability diagram em forma de tabela: para cada bucket de probabilidade
+    prevista, compara com a taxa real de vitórias observada nesse bucket.
+    Um modelo honesto tem as duas colunas próximas em todos os buckets.
+    """
+    cols = ["Bucket", "Prob. Média Prevista", "Taxa Real de Vitórias", "N"]
+    if df_bt.empty:
+        return pd.DataFrame(columns=cols)
+    bins = np.linspace(0, 1, n_bins + 1)
+    tmp = df_bt.copy()
+    tmp["bucket"] = pd.cut(tmp["prob"], bins, include_lowest=True)
+    g = (
+        tmp.groupby("bucket", observed=True)
+        .agg(prob_media=("prob", "mean"), taxa_real=("actual", "mean"), n=("actual", "size"))
+        .dropna()
+        .reset_index()
+    )
+    g.columns = cols
+    return g
 
 
 # ============================================================================
@@ -599,6 +804,23 @@ st.sidebar.header("⚙️ Condições de Jogo")
 vel_campo     = st.sidebar.selectbox("Velocidade do Campo", list(SURFACE_MOD.keys()))
 ajuste_forma  = st.sidebar.slider("Ajuste de Forma (P1 vs P2)", -5, 5, 0)
 ajuste_fadiga = st.sidebar.slider("Ajuste de Fadiga (P1 vs P2)", -5, 5, 0)
+ajuste_contexto = st.sidebar.slider(
+    "Ajuste de Contexto (Altitude/Torneio/Jet Lag)", -5, 5, 0,
+    help=(
+        "Proxy manual para efeitos ainda não modelados com dados dedicados: "
+        "altitude (Madrid/Bogotá aceleram a bola e sobem os aces), fuso "
+        "horário nos últimos dias, tier do torneio (Slam vs Challenger). "
+        "Positivo favorece P1, negativo favorece P2. Peso deliberadamente "
+        "pequeno até existir uma fonte de dados própria para estas variáveis."
+    ),
+)
+
+st.sidebar.caption(
+    "ℹ️ Altitude, temperatura/humidade, jet lag e tier do torneio ainda não "
+    "têm dados próprios — o slider acima é um proxy manual, não um cálculo "
+    "automático. Para automatizar, é preciso uma coluna de altitude/tier por "
+    "torneio e datas de jogos anteriores para calcular o jet lag."
+)
 
 
 def safe_idx(name, fallback=0) -> int:
@@ -617,6 +839,7 @@ def build_setup(p1: str, p2: str, h2h_override=None) -> MatchSetup:
         surface_mod=SURFACE_MOD[vel_campo],
         form_adj=ajuste_forma,
         fatigue_adj=ajuste_fadiga,
+        context_adj=ajuste_contexto,
         h2h=h2h_override if h2h_override is not None else get_h2h(p1, p2, df),
         ml_model=ml_model,
     )
@@ -661,8 +884,8 @@ def render_results(bets: List[Bet], p1: str, p2: str, sims: dict) -> None:
 
 
 # ── ABAS ──────────────────────────────────────────────────────────────────────
-tab_agenda, tab_scanner, tab_manual, tab_csv = st.tabs(
-    ["📅 Agenda", "🤖 Auto-Scanner", "🔍 Calculadora Manual", "🚀 CSV em Massa"]
+tab_agenda, tab_scanner, tab_manual, tab_csv, tab_calib = st.tabs(
+    ["📅 Agenda", "🤖 Auto-Scanner", "🔍 Calculadora Manual", "🚀 CSV em Massa", "📉 Calibração"]
 )
 
 # ── AGENDA ────────────────────────────────────────────────────────────────────
@@ -790,3 +1013,48 @@ with tab_csv:
             st.dataframe(pd.DataFrame(resultados), use_container_width=True)
         else:
             st.info("Nenhuma aposta com valor nas linhas processadas.")
+
+# ── CALIBRAÇÃO ────────────────────────────────────────────────────────────────
+with tab_calib:
+    st.header("📉 Calibração Histórica do Modelo")
+    st.warning(
+        "⚠️ **Nota metodológica:** este backtest usa o snapshot ACTUAL de Elo "
+        "como aproximação do valor à data de cada jogo histórico — não existe "
+        "ainda um histórico de Elo point-in-time guardado. Os números são "
+        "indicativos e tendem a ser optimistas para jogos mais antigos "
+        "(lookahead bias), não substituem um backtest walk-forward puro."
+    )
+
+    n_amostra = st.slider("Nº de jogos a amostrar", 500, 10_000, 3_000, 500)
+
+    if st.button("Correr Backtest", key="btn_backtest"):
+        with st.spinner("A recalcular previsões históricas..."):
+            df_bt = run_backtest(circuito, n_amostra)
+
+        if df_bt.empty:
+            st.error(
+                "Dados insuficientes para o backtest — faltam colunas "
+                "`player` / `opponent` / `winner` no ficheiro de dados."
+            )
+        else:
+            bs = brier_score(df_bt)
+            c1, c2 = st.columns(2)
+            c1.metric(
+                "Brier Score", f"{bs:.4f}",
+                help="0 = previsões perfeitas | 0.25 = tão bom como adivinhar sempre 50/50 | quanto menor, melhor",
+            )
+            c2.metric("Jogos Analisados", f"{len(df_bt)}")
+
+            tabela = calibration_table(df_bt)
+            st.markdown("#### Curva de Calibração (Reliability Diagram)")
+            st.markdown(
+                "Se o modelo for honesto, a **Prob. Média Prevista** e a "
+                "**Taxa Real de Vitórias** devem ficar próximas em cada bucket. "
+                "Se a taxa real for sistematicamente mais baixa que a prevista "
+                "nos buckets altos, o modelo está a ser demasiado confiante."
+            )
+            st.dataframe(tabela, use_container_width=True)
+
+            if not tabela.empty:
+                chart_df = tabela.set_index("Bucket")[["Prob. Média Prevista", "Taxa Real de Vitórias"]]
+                st.line_chart(chart_df)
