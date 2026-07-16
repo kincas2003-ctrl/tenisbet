@@ -4,25 +4,28 @@ Toda a lógica (config, simulação, mercados, parser, dados) está aqui,
 organizada em secções claramente separadas.
 
 v2 — Melhorias adicionadas:
-  1. Hold rate específico por superfície (com shrinkage bayesiano para a média global)
-  2. Forma recente ponderada pelo Elo do adversário (vencer o nº1 pesa mais que vencer o 200º)
-  3. Fadiga modelada de forma não-linear (efeito quase neutro em baixo volume, acelera acima do limiar)
-  4. Mapeamento hold-rate em espaço logit (sigmoidal), não linear — colapsa perto dos limites físicos
-  5. Momentum entre sets (ganhar um set altera a prob. de hold no set seguinte)
-  6. Módulo de calibração histórica (Brier Score + reliability diagram)
-  7. Slider manual de "Contexto" (altitude / torneio / jet lag) como proxy honesto,
-     enquanto não existirem dados dedicados a estas variáveis
+  1. Hold rate específico por superfície (com shrinkage bayesiano)
+  2. Forma recente ponderada pelo Elo do adversário
+  3. Fadiga modelada de forma não-linear
+  4. Mapeamento hold-rate em espaço logit (sigmoidal)
+  5. Momentum entre sets
+  6. Módulo de calibração histórica
+  7. Slider manual de "Contexto"
 
-v3 — Dados reais do Match Charting Project (Jeff Sackmann):
-  8. Hold rate e ace rate por jogador/superfície calculados a partir de dados
-     reais ponto-a-ponto (quando disponíveis) ou implícitos via % de pontos de
-     serviço ganhos (cobertura mais larga), em vez do proxy agregado antigo.
-     Ver player_surface_profile.csv e build_surface_profile.py.
+v3 — Dados reais do Match Charting Project:
+  8. Hold rate e ace rate reais ponto-a-ponto
+
+v4 — Refinamentos de Qualidade:
+  9. Fuzzy Matching de nomes de jogadores (rapidfuzz)
+ 10. Cache dinâmica com TTL (1 hora)
+ 11. Suporte para mercado de Correct Score (Sets)
+ 12. Validação detalhada de lucro por superfície no Backtest
 """
 
 import os
 import re
 import zipfile
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Union
@@ -30,6 +33,10 @@ from typing import Dict, List, Optional, Tuple, Union
 import numpy as np
 import pandas as pd
 import streamlit as st
+from rapidfuzz import process, fuzz
+
+# Configuração de Logs
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
 # ============================================================================
 # SECÇÃO 1 — CONFIGURAÇÃO (todos os parâmetros num único lugar)
@@ -67,16 +74,16 @@ class ModelConfig:
     kelly_max: float         = 0.035
     kelly_min: float         = 0.005
 
-    # ---- Novos parâmetros (v2) --------------------------------------------
-    hold_shrink_k: float     = 20.0   # nº de jogos na superfície para "peso pleno" no shrinkage
-    form_elo_scale: float    = 400.0  # escala tipo-Elo para pesar vitórias pela força do adversário
-    form_weight_min: float   = 0.3    # peso mínimo de uma vitória (adversário muito mais fraco)
-    form_weight_max: float   = 3.0    # peso máximo de uma vitória (adversário muito mais forte)
-    fatigue_threshold: float = 6.0    # jogos/semana considerados "carga normal"
-    fatigue_exponent: float  = 1.8    # expoente de aceleração acima do limiar
-    hold_logit_scale: float  = 3.0    # ganho do deslocamento em espaço logit (hold rate)
-    momentum_boost: float    = 0.10   # ~8-12% de boost de hold para quem ganhou o set anterior
-    context_weight: float    = 0.01   # peso do ajuste manual de contexto (altitude/torneio/jetlag)
+    # ---- Parâmetros Avançados --------------------------------------------
+    hold_shrink_k: float     = 20.0   
+    form_elo_scale: float    = 400.0  
+    form_weight_min: float   = 0.3    
+    form_weight_max: float   = 3.0    
+    fatigue_threshold: float = 6.0    
+    fatigue_exponent: float  = 1.8    
+    hold_logit_scale: float  = 3.0    
+    momentum_boost: float    = 0.10   
+    context_weight: float    = 0.01   
 
 
 CIRCUIT: Dict[str, CircuitConfig] = {
@@ -98,13 +105,7 @@ SURFACE_MOD: Dict[str, SurfaceModifier] = {
 
 MODEL = ModelConfig()
 
-# Pontos de serviço por jogo normal (exclui tie-breaks), calculado empiricamente
-# a partir de ~700 mil pontos reais do Match Charting Project (ver build_surface_profile.py).
-# Usado para converter ace_rate_per_100_serve_pts (do perfil real) em aces-por-jogo.
 PTS_PER_SERVICE_GAME = 6.24
-
-# Nº mínimo de jogos de serviço reais (EXACT) no perfil MCP para confiarmos nele
-# com peso pleno no shrinkage do hold rate; abaixo disso, mistura com a implied/global.
 MCP_HOLD_MIN_GAMES = 40.0
 
 
@@ -118,7 +119,7 @@ class PlayerStats:
     hold_rate: float
     fatigue: float
     recent_form: float
-    ace_rate_100: Optional[float] = None  # aces por 100 pontos de serviço (dados reais MCP), se disponível
+    ace_rate_100: Optional[float] = None  
 
 
 @dataclass
@@ -131,7 +132,7 @@ class MatchSetup:
     form_adj: int
     fatigue_adj: int
     h2h: Tuple[int, int]
-    context_adj: int = 0     # ajuste manual: altitude / tier do torneio / jet lag
+    context_adj: int = 0     
     ml_model: object = None
 
 
@@ -140,7 +141,6 @@ def _elo_prob(elo_diff: float) -> float:
 
 
 def _h2h_adj(h2h: Tuple[int, int]) -> float:
-    """Ajuste bayesiano de H2H — cresce com evidência real."""
     w1, w2 = h2h
     total = w1 + w2
     if total == 0:
@@ -151,13 +151,6 @@ def _h2h_adj(h2h: Tuple[int, int]) -> float:
 
 
 def _fatigue_nonlinear(games: float) -> float:
-    """
-    Converte 'jogos disputados na última semana' numa carga de fadiga não-linear.
-    A literatura mostra que o efeito não é proporcional ao nº de jogos: um volume
-    normal (poucos jogos) é quase neutro, mas a partir de um limiar o desgaste
-    acelera (aproxima o efeito real de vários jogos/sets seguidos em dias
-    consecutivos, sem precisarmos ainda de uma coluna dedicada a "games jogados").
-    """
     if games <= MODEL.fatigue_threshold:
         return games * 0.5
     excess = games - MODEL.fatigue_threshold
@@ -165,7 +158,6 @@ def _fatigue_nonlinear(games: float) -> float:
 
 
 def _compute_match_prob(setup: MatchSetup) -> float:
-    """Probabilidade P(P1 vence) antes da simulação por jogos."""
     if setup.ml_model is not None:
         try:
             features = pd.DataFrame([[
@@ -203,15 +195,6 @@ def _inv_logit(z: float, lo: float, hi: float) -> float:
 
 
 def _hold_probs(prob: float, cfg: CircuitConfig, mod: SurfaceModifier) -> Tuple[float, float]:
-    """
-    Mapeia a probabilidade de vitória do encontro para hold rates de serviço.
-
-    Em vez de um deslocamento linear (`shift = (prob-0.5) * k`), trabalha em
-    espaço logit: a relação qualidade-do-jogador -> hold rate não é linear,
-    é sigmoidal — a diferença de hold colapsa perto dos limites fisiológicos
-    (hold_min / hold_max), tal como acontece na realidade (um jogador muito
-    melhor não continua a ganhar hold rate proporcionalmente perto de 95%).
-    """
     base = float(np.clip(cfg.base_hold + mod.hold_delta, cfg.hold_min, cfg.hold_max))
     z_base = _logit(base, cfg.hold_min, cfg.hold_max)
     delta = (prob - 0.5) * MODEL.game_prob_scale * MODEL.hold_logit_scale
@@ -224,11 +207,6 @@ def _hold_probs(prob: float, cfg: CircuitConfig, mod: SurfaceModifier) -> Tuple[
 
 
 def _apply_momentum(base_h: Union[float, np.ndarray], won_prev: np.ndarray, boost: float) -> np.ndarray:
-    """
-    Ajusta o hold rate consoante o resultado do set anterior.
-    Ganhar o set anterior aumenta a prob. de vitória no seguinte em ~8-12%
-    acima do previsto pelo Elo (efeito de momentum documentado empiricamente).
-    """
     boosted = np.clip(base_h + boost * (1.0 - base_h), 0.0, 1.0)
     depressed = np.clip(base_h - boost * base_h, 0.0, 1.0)
     return np.where(won_prev, boosted, depressed)
@@ -240,17 +218,11 @@ def _sim_set(
     p2h: Union[float, np.ndarray],
     rng: np.random.Generator,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Simula N sets em paralelo com lógica de terminação vectorizada.
-    p1h/p2h podem ser escalares (mesma taxa para todas as simulações) ou
-    arrays de forma (n,) — usado para aplicar momentum por-simulação
-    consoante o resultado do set anterior nessa simulação específica.
-    """
     g1 = np.zeros(n, dtype=np.int32)
     g2 = np.zeros(n, dtype=np.int32)
     active = np.ones(n, dtype=bool)
 
-    for game_idx in range(13):  # máximo 13 jogos num set (7-6)
+    for game_idx in range(13):  
         if not active.any():
             break
         base_p = p1h if (game_idx % 2 == 0) else (1.0 - p2h)
@@ -269,21 +241,12 @@ def _sim_set(
 
 
 def simulate(setup: MatchSetup, n: int = MODEL.monte_carlo_n) -> dict:
-    """
-    Simula N encontros em paralelo.
-    20-50× mais rápido que a versão original em Python puro.
-    Inclui momentum entre sets: o resultado de cada set ajusta o hold rate
-    efectivo do set seguinte, por simulação.
-    """
     rng = np.random.default_rng(42)
     match_prob = _compute_match_prob(setup)
     p1h, p2h = _hold_probs(match_prob, setup.circuit_cfg, setup.surface_mod)
 
     ace_base = setup.circuit_cfg.base_aces_per_game * setup.surface_mod.ace_multiplier
 
-    # Se existir ace_rate_100 real (Match Charting Project) para o jogador nesta
-    # superfície, converte para aces-por-jogo usando a constante empírica de
-    # pontos-por-jogo. Caso contrário, mantém o fallback pela superfície/hold.
     if setup.p1.ace_rate_100 is not None:
         rate_a1 = max(0.02, (setup.p1.ace_rate_100 / 100.0) * PTS_PER_SERVICE_GAME)
     else:
@@ -321,7 +284,6 @@ def simulate(setup: MatchSetup, n: int = MODEL.monte_carlo_n) -> dict:
         g1, g2 = _sim_set(n, cur_p1h, cur_p2h, rng)
         games_in_set = g1 + g2
 
-        # Aces: escalados pelo número real de jogos de serviço
         srv1 = (games_in_set + 1) // 2
         srv2 = games_in_set // 2
         sa1 = rng.poisson(rate_a1 * srv1).astype(np.float32)
@@ -378,7 +340,6 @@ class Bet:
 
 
 def _kelly(prob: float, odd: float) -> float:
-    """Kelly fraccionado completo. A versão original usava EV/(odd-1), que é uma aproximação."""
     if odd <= 1.0 or prob <= 0:
         return 0.0
     full = (prob * odd - 1.0) / (odd - 1.0)
@@ -438,6 +399,21 @@ def compute_markets(sims: dict, mkts: dict, p1: str, p2: str) -> List[Bet]:
     if "P1" in s2w: bets.append(_bet(f"Vence 2º Set {p1}", prob_s2, s2w["P1"]))
     if "P2" in s2w: bets.append(_bet(f"Vence 2º Set {p2}", 1 - prob_s2, s2w["P2"]))
     for line, oo in mkts.get("set2_total_games", {}).items(): ou(s2p1 + s2p2, line, "Jogos 2º Set", "Jogos 2º Set", oo)
+
+    # Correct Score (Resultado Exato em Sets)
+    max_sets = np.max(p1s + p2s)
+    cs_mkts = mkts.get("correct_score", {})
+    
+    if max_sets <= 3: 
+        prob_2_0_p1 = float(np.mean((p1s == 2) & (p2s == 0)))
+        prob_2_1_p1 = float(np.mean((p1s == 2) & (p2s == 1)))
+        prob_2_0_p2 = float(np.mean((p2s == 2) & (p1s == 0)))
+        prob_2_1_p2 = float(np.mean((p2s == 2) & (p1s == 1)))
+        
+        if "2-0 P1" in cs_mkts: bets.append(_bet(f"Resultado Exato 2-0 {p1}", prob_2_0_p1, cs_mkts["2-0 P1"]))
+        if "2-1 P1" in cs_mkts: bets.append(_bet(f"Resultado Exato 2-1 {p1}", prob_2_1_p1, cs_mkts["2-1 P1"]))
+        if "2-0 P2" in cs_mkts: bets.append(_bet(f"Resultado Exato 2-0 {p2}", prob_2_0_p2, cs_mkts["2-0 P2"]))
+        if "2-1 P2" in cs_mkts: bets.append(_bet(f"Resultado Exato 2-1 {p2}", prob_2_1_p2, cs_mkts["2-1 P2"]))
 
     bets.sort(key=lambda b: b.ev, reverse=True)
     return bets
@@ -520,6 +496,7 @@ def _empty_mkts() -> dict:
         "set1_winner": {}, "set1_total_games": {}, "set1_handicap": {"P1": {}, "P2": {}},
         "set2_winner": {}, "set2_total_games": {}, "set2_handicap": {"P1": {}, "P2": {}},
         "total_aces": {}, "p1_aces": {}, "p2_aces": {},
+        "correct_score": {},
     }
 
 
@@ -540,7 +517,6 @@ def parse_odds(text: str, p1: str = "", p2: str = "") -> dict:
         if cat == "Ignored": continue
         key, odd = parsed
 
-        # Filtrar linhas compostas (&, and, resultado exacto)
         has_combo = any(x in key for x in ["&", " and ", " e "])
         if has_combo and cat in ("match_winner", "set1_winner", "set2_winner",
                                   "total_games", "total_sets", "p1_total_games",
@@ -594,20 +570,17 @@ def load_ml_model():
     return None
 
 
-@st.cache_data
+@st.cache_data(ttl="1h", show_spinner=False)
 def load_match_data() -> pd.DataFrame:
     with zipfile.ZipFile("dados_resumidos.zip", "r") as z:
         df = pd.read_csv(z.open("dados_resumidos.csv"))
     
-    # 1. Padronizar todos os nomes de colunas para minúsculas para evitar erros de maiúsculas
     df.columns = [str(c).lower().strip() for c in df.columns]
     
-    # 2. Se o teu CSV usa a estrutura padrão (winner / loser), adaptamos automaticamente:
     if "winner" in df.columns and "loser" in df.columns and "player" not in df.columns:
         df["player"] = df["winner"]
         df["opponent"] = df["loser"]
         
-    # 3. Normalizar nomes uma vez — cria as variáveis internas do modelo (_pn, _on, _wn)
     for col, norm in [("player", "_pn"), ("opponent", "_on"), ("winner", "_wn")]:
         if col in df.columns:
             df[norm] = df[col].astype(str).str.casefold().str.strip()
@@ -615,7 +588,7 @@ def load_match_data() -> pd.DataFrame:
     return df
 
 
-@st.cache_data
+@st.cache_data(ttl="1h", show_spinner=False)
 def load_elos(circuito: str) -> pd.DataFrame:
     f = "EloRankP.csv" if circuito == "WTA (Feminino)" else "PlayerElo.csv"
     if os.path.exists(f):
@@ -625,14 +598,8 @@ def load_elos(circuito: str) -> pd.DataFrame:
     return pd.DataFrame(columns=["Player", "Elo", "hElo", "cElo", "gElo", "_nn"])
 
 
-@st.cache_data
+@st.cache_data(ttl="1h", show_spinner=False)
 def load_surface_profile() -> pd.DataFrame:
-    """
-    Perfil real de hold rate e ace rate por jogador/superfície, construído a
-    partir do Match Charting Project (ver build_surface_profile.py). Precisa
-    de 'player_surface_profile.csv' na mesma pasta da app para produzir efeito;
-    caso contrário, o modelo usa apenas o fallback antigo (dados_resumidos + Elo).
-    """
     f = "player_surface_profile.csv"
     if os.path.exists(f):
         prof = pd.read_csv(f)
@@ -645,7 +612,6 @@ def load_surface_profile() -> pd.DataFrame:
 
 
 def load_agenda() -> pd.DataFrame:
-    """Sem @cache_data — contém datetime.today() que não pode ser congelado."""
     if os.path.exists("agenda.csv"):
         try:
             df = pd.read_csv("agenda.csv")
@@ -664,16 +630,36 @@ def load_agenda() -> pd.DataFrame:
     })
 
 
+def _fuzzy_match(name: str, choices: List[str], threshold: float = 85.0) -> str:
+    if not choices:
+        return name
+    match = process.extractOne(name, choices, scorer=fuzz.WRatio)
+    if match and match[1] >= threshold:
+        return match[0]
+    return name
+
+
 def _lookup_elo(nn: str, superficie: str, df_elos: pd.DataFrame, default: float) -> float:
-    """Elo do jogador (por nome já normalizado) na superfície indicada, com fallback."""
     if df_elos.empty or "_nn" not in df_elos.columns:
+        logging.warning(f"Ficheiro de Elos vazio. A usar default ({default}) para {nn}.")
         return default
+    
     row = df_elos[df_elos["_nn"] == nn]
+    
     if row.empty:
-        return default
+        opcoes = df_elos["_nn"].tolist()
+        best_match = _fuzzy_match(nn, opcoes)
+        if best_match != nn:
+            logging.info(f"Fuzzy match: '{nn}' corrigido para '{best_match}'")
+            row = df_elos[df_elos["_nn"] == best_match]
+        else:
+            logging.warning(f"Jogador '{nn}' não encontrado. A usar Elo default ({default}).")
+            return default
+
     col = {"Clay": "cElo", "Grass": "gElo", "Hard": "hElo"}.get(superficie, "Elo")
-    if col in row.columns:
+    if col in row.columns and pd.notna(row[col].iloc[0]):
         return float(row[col].iloc[0])
+    
     return default
 
 
@@ -683,10 +669,6 @@ def get_stats(nome: str, superficie: str, circuito: str, df: pd.DataFrame, df_el
 
     elo = _lookup_elo(nn, superficie, df_elos, cfg.default_elo)
 
-    # --- Hold rate: específico da superfície, com shrinkage bayesiano ------
-    # Um jogador pode ter 78% de hold em geral mas 72% no clay. Usamos o valor
-    # específico da superfície, encolhido em direcção à média global consoante
-    # o nº de jogos disponíveis nessa superfície (evita overfit em amostras pequenas).
     hold = cfg.base_hold
     if "_pn" in df.columns and "hold_percentage" in df.columns:
         m_all = df[df["_pn"] == nn]
@@ -704,10 +686,6 @@ def get_stats(nome: str, superficie: str, circuito: str, df: pd.DataFrame, df_el
             else:
                 hold = hold_global
 
-    # --- Perfil real do Match Charting Project (prioridade sobre o proxy acima) ---
-    # Quando existe hold rate real (exacto jogo-a-jogo, ou implícito via SPW%)
-    # para este jogador nesta superfície, funde-o com o valor acima através de
-    # shrinkage: mais jogos reais reconstruídos -> mais peso no valor real.
     ace_rate_100 = None
     df_profile = load_surface_profile()
     if not df_profile.empty:
@@ -721,15 +699,12 @@ def get_stats(nome: str, superficie: str, circuito: str, df: pd.DataFrame, df_el
             if pd.notna(row.get("ace_rate_per_100_serve_pts")):
                 ace_rate_100 = float(row["ace_rate_per_100_serve_pts"])
 
-    # --- Fadiga (valor bruto; a não-linearidade é aplicada em _fatigue_nonlinear) ---
     fatigue = 0.0
     if "_pn" in df.columns and "games_played_last_week" in df.columns:
         m = df[df["_pn"] == nn]
         if not m.empty:
             fatigue = float(m["games_played_last_week"].iloc[-1])
 
-    # --- Forma recente ponderada pelo Elo do adversário --------------------
-    # Uma vitória contra o top 10 vale mais do que uma vitória contra o 200º.
     form = 0.5
     if "_pn" in df.columns and "_wn" in df.columns and "_on" in df.columns:
         m = df[df["_pn"] == nn].tail(5)
@@ -770,12 +745,9 @@ def get_h2h(p1: str, p2: str, df: pd.DataFrame) -> Tuple[int, int]:
 # Calibração / Backtesting histórico
 # ----------------------------------------------------------------------------
 
-@st.cache_data
+@st.cache_data(ttl="1h", show_spinner=False)
 def run_backtest(circuito: str, n_sample: int = 3000, limite_valor: float = 0.05) -> pd.DataFrame:
-    """
-    Lê o ficheiro 2023 e simula apostas baseadas no valor esperado (EV).
-    """
-    ficheiro_backtest = "2023.xlsx - 2023.csv"
+    ficheiro_backtest = "2023.csv"
     
     if not os.path.exists(ficheiro_backtest):
         return pd.DataFrame()
@@ -784,7 +756,6 @@ def run_backtest(circuito: str, n_sample: int = 3000, limite_valor: float = 0.05
     df_elos = load_elos(circuito)
     cfg = CIRCUIT[circuito]
     
-    # Filtrar apenas jogos com odds disponíveis
     df = df.dropna(subset=["Winner", "Loser", "AvgW", "AvgL"])
     
     if len(df) > n_sample:
@@ -795,56 +766,46 @@ def run_backtest(circuito: str, n_sample: int = 3000, limite_valor: float = 0.05
         p1n, p2n = str(r["Winner"]).casefold().strip(), str(r["Loser"]).casefold().strip()
         surf = r["Surface"] if ("Surface" in r and pd.notna(r["Surface"])) else "Hard"
         
-        # Obter Elos
         e1 = _lookup_elo(p1n, surf, df_elos, cfg.default_elo)
         e2 = _lookup_elo(p2n, surf, df_elos, cfg.default_elo)
         
-        # O modelo calcula a probabilidade do P1 (que, neste ficheiro, é sempre o Vencedor real)
         prob_modelo_w = _elo_prob(e1 - e2)
         prob_modelo_l = 1.0 - prob_modelo_w
         
-        # Probabilidades implícitas nas odds (sem remover a margem da casa para ser mais conservador)
         prob_casa_w = 1.0 / r["AvgW"] if r["AvgW"] > 0 else 1.0
         prob_casa_l = 1.0 / r["AvgL"] if r["AvgL"] > 0 else 1.0
         
-        # Calcular EV para as duas opções
         ev_w = (r["AvgW"] * prob_modelo_w) - 1
         ev_l = (r["AvgL"] * prob_modelo_l) - 1
         
-        # Lógica de aposta: apostamos na opção com maior EV, desde que seja > limite_valor
         aposta_feita = "Nenhuma"
         lucro = 0.0
         
         if ev_w > limite_valor and ev_w > ev_l:
             aposta_feita = "Vencedor"
-            lucro = r["AvgW"] - 1.0  # Ganhou a aposta (porque o P1 é sempre o Vencedor neste CSV)
+            lucro = r["AvgW"] - 1.0  
         elif ev_l > limite_valor and ev_l > ev_w:
             aposta_feita = "Perdedor"
-            lucro = -1.0  # Perdeu a aposta (porque o P2 é o Loser real)
+            lucro = -1.0  
             
         resultados.append({
             "prob": prob_modelo_w, 
-            "actual": 1.0,  # P1 vence sempre neste formato
+            "actual": 1.0,  
             "aposta": aposta_feita,
-            "lucro": lucro
+            "lucro": lucro,
+            "Surface": surf
         })
 
     return pd.DataFrame(resultados)
 
 
 def brier_score(df_bt: pd.DataFrame) -> float:
-    """0 = previsões perfeitas; 0.25 = tão bom como prever sempre 50/50."""
     if df_bt.empty:
         return float("nan")
     return float(np.mean((df_bt["prob"] - df_bt["actual"]) ** 2))
 
 
 def calibration_table(df_bt: pd.DataFrame, n_bins: int = 10) -> pd.DataFrame:
-    """
-    Reliability diagram em forma de tabela: para cada bucket de probabilidade
-    prevista, compara com a taxa real de vitórias observada nesse bucket.
-    Um modelo honesto tem as duas colunas próximas em todos os buckets.
-    """
     cols = ["Bucket", "Prob. Média Prevista", "Taxa Real de Vitórias", "N"]
     if df_bt.empty:
         return pd.DataFrame(columns=cols)
@@ -868,16 +829,13 @@ def calibration_table(df_bt: pd.DataFrame, n_bins: int = 10) -> pd.DataFrame:
 st.set_page_config(page_title="QuantBet OS", layout="wide")
 st.title("🎾 QuantBet OS: Sistema Quantitativo ATP & WTA")
 
-# Session state
 for k in ("agenda_p1", "agenda_p2"):
     if k not in st.session_state:
         st.session_state[k] = None
 
-# Dados
 df       = load_match_data()
 ml_model = load_ml_model()
 
-# Sidebar
 st.sidebar.header("1. Configurações Globais")
 circuito = st.sidebar.radio("Circuito", list(CIRCUIT.keys()))
 if ml_model is None:
@@ -910,19 +868,8 @@ ajuste_fadiga = st.sidebar.slider("Ajuste de Fadiga (P1 vs P2)", -5, 5, 0)
 ajuste_contexto = st.sidebar.slider(
     "Ajuste de Contexto (Altitude/Torneio/Jet Lag)", -5, 5, 0,
     help=(
-        "Proxy manual para efeitos ainda não modelados com dados dedicados: "
-        "altitude (Madrid/Bogotá aceleram a bola e sobem os aces), fuso "
-        "horário nos últimos dias, tier do torneio (Slam vs Challenger). "
-        "Positivo favorece P1, negativo favorece P2. Peso deliberadamente "
-        "pequeno até existir uma fonte de dados própria para estas variáveis."
+        "Proxy manual para efeitos ainda não modelados com dados dedicados."
     ),
-)
-
-st.sidebar.caption(
-    "ℹ️ Altitude, temperatura/humidade, jet lag e tier do torneio ainda não "
-    "têm dados próprios — o slider acima é um proxy manual, não um cálculo "
-    "automático. Para automatizar, é preciso uma coluna de altitude/tier por "
-    "torneio e datas de jogos anteriores para calcular o jet lag."
 )
 
 
@@ -986,12 +933,10 @@ def render_results(bets: List[Bet], p1: str, p2: str, sims: dict) -> None:
         c3.metric("Prob P1 Vence 1º Set",   f"{np.mean(sims['s1_p1'] > sims['s1_p2']):.1%}")
 
 
-# ── ABAS ──────────────────────────────────────────────────────────────────────
 tab_agenda, tab_scanner, tab_manual, tab_csv, tab_calib = st.tabs(
     ["📅 Agenda", "🤖 Auto-Scanner", "🔍 Calculadora Manual", "🚀 CSV em Massa", "📉 Calibração"]
 )
 
-# ── AGENDA ────────────────────────────────────────────────────────────────────
 with tab_agenda:
     st.header("📅 Calendário de Torneios")
     st.markdown("Podes alimentar esta lista criando um ficheiro `agenda.csv` na mesma pasta da app.")
@@ -1013,7 +958,6 @@ with tab_agenda:
                         st.session_state["agenda_p2"] = jogo["P2"]
                         st.success("✅ Vai à aba **Auto-Scanner** ou **Calculadora Manual**.")
 
-# ── AUTO-SCANNER ──────────────────────────────────────────────────────────────
 with tab_scanner:
     st.header("Auto-Scanner Inteligente (Copiar & Colar)")
     cs1, cs2 = st.columns(2)
@@ -1040,7 +984,6 @@ with tab_scanner:
                     bets = compute_markets(sims, mkts, sp1, sp2)
                 render_results(bets, sp1, sp2, sims)
 
-# ── CALCULADORA MANUAL ────────────────────────────────────────────────────────
 with tab_manual:
     st.header("Análise de Partida Única")
     cm1, cm2 = st.columns(2)
@@ -1072,7 +1015,6 @@ with tab_manual:
                 bets = compute_markets(sims, mkts, mp1, mp2)
             render_results(bets, mp1, mp2, sims)
 
-# ── CSV EM MASSA ──────────────────────────────────────────────────────────────
 with tab_csv:
     st.header("Scanner de Valor Múltiplo (CSV)")
     st.markdown("`Jogador 1, Jogador 2, Odd P1, Odd P2`")
@@ -1117,7 +1059,6 @@ with tab_csv:
         else:
             st.info("Nenhuma aposta com valor nas linhas processadas.")
 
-# ── CALIBRAÇÃO ────────────────────────────────────────────────────────────────
 with tab_calib:
     st.header("📉 Backtest Histórico (2023)")
     st.markdown("Testa o teu modelo contra as odds reais de fecho (`AvgW` / `AvgL`) para veres se gera lucro a longo prazo.")
@@ -1127,8 +1068,8 @@ with tab_calib:
     filtro_ev = c_ev.slider("EV Mínimo para Apostar (%)", 1.0, 15.0, 5.0, 0.5) / 100
 
     if st.button("Correr Backtest", key="btn_backtest"):
-        if not os.path.exists("2023.xlsx - 2023.csv"):
-            st.error("❌ O ficheiro `2023.xlsx - 2023.csv` não foi encontrado na pasta principal.")
+        if not os.path.exists("2023.csv"):
+            st.error("❌ O ficheiro `2023.csv` não foi encontrado na pasta principal.")
         else:
             with st.spinner("A cruzar previsões com odds de mercado..."):
                 df_bt = run_backtest(circuito, n_amostra, filtro_ev)
@@ -1138,7 +1079,6 @@ with tab_calib:
             else:
                 bs = brier_score(df_bt)
                 
-                # Calcular métricas financeiras
                 total_apostas = len(df_bt[df_bt["aposta"] != "Nenhuma"])
                 lucro_unidades = df_bt["lucro"].sum()
                 roi = (lucro_unidades / total_apostas) * 100 if total_apostas > 0 else 0
@@ -1148,9 +1088,19 @@ with tab_calib:
                 c2.metric("Jogos Analisados", f"{len(df_bt)}")
                 c3.metric("Apostas Feitas", f"{total_apostas}")
                 
-                # Cor do ROI (Verde se lucro, vermelho se prejuízo)
                 delta_color = "normal" if lucro_unidades >= 0 else "inverse"
                 c4.metric("Lucro (Unidades)", f"{lucro_unidades:.2f} U", f"ROI: {roi:.2f}%", delta_color=delta_color)
+
+                st.markdown("#### Performance por Superfície")
+                if "Surface" in df_bt.columns:
+                    perf_surf = df_bt[df_bt["aposta"] != "Nenhuma"].groupby("Surface").apply(
+                        lambda x: pd.Series({
+                            "Apostas": len(x),
+                            "Lucro (U)": x["lucro"].sum(),
+                            "ROI (%)": (x["lucro"].sum() / len(x)) * 100 if len(x) > 0 else 0
+                        })
+                    ).reset_index()
+                    st.dataframe(perf_surf.style.format({"Lucro (U)": "{:.2f}", "ROI (%)": "{:.2f}%"}), use_container_width=True)
 
                 tabela = calibration_table(df_bt)
                 st.markdown("#### Curva de Calibração (Reliability Diagram)")
