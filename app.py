@@ -1415,9 +1415,9 @@ else:
 
     # Seleção de jogo para simular
     if not agenda_visivel.empty:
-        opcoesjogo = [
-            f"{row['P1']} vs {row['P2']} - {row['Torneio']} ({row['Data']})" 
-            for index, row in agenda_visivel.iterrows()
+        opcoes_jogo = [
+    f"{row['P1']} vs {row['P2']} - {row['Torneio']} ({row['Data']})" 
+    for index, row in agenda_visivel.iterrows()
 ]
 
 jogo_escolhido = st.selectbox("Selecionar jogo para simular", opcoes_jogo)
