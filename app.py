@@ -29,6 +29,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Union
+import io
 import sqlite3
 import numpy as np
 import pandas as pd
@@ -118,10 +119,11 @@ MCP_HOLD_MIN_GAMES = 40.0
 class PlayerStats:
     elo: float
     hold_rate: float
+    return_rate: float       # NOVO: Capacidade de resposta (quebrar o serviço)
     fatigue: float
     recent_form: float
     ace_rate_100: Optional[float] = None  
-    hold_std: float = MODEL.noise_std  # NOVO: Variância individual  
+    hold_std: float = MODEL.noise_std  
 
 
 @dataclass
@@ -196,15 +198,28 @@ def _inv_logit(z: float, lo: float, hi: float) -> float:
     return lo + x * (hi - lo)
 
 
-def _hold_probs(prob: float, cfg: CircuitConfig, mod: SurfaceModifier) -> Tuple[float, float]:
-    base = float(np.clip(cfg.base_hold + mod.hold_delta, cfg.hold_min, cfg.hold_max))
-    z_base = _logit(base, cfg.hold_min, cfg.hold_max)
+def _hold_probs(prob: float, setup: MatchSetup) -> Tuple[float, float]:
+    cfg = setup.circuit_cfg
+    mod = setup.surface_mod
+    
+    # 1. Base do Circuito ajustada pela superfície
+    base_hold = float(np.clip(cfg.base_hold + mod.hold_delta, cfg.hold_min, cfg.hold_max))
+    base_return = 1.0 - base_hold
+    
+    # 2. Vantagem de Matchup (Serviço vs Resposta)
+    # Se o P1 segura 85% (média 80%) = +5%. Se o P2 quebra 25% (média 20%) = +5%. 
+    # Vantagem final do P1 a servir = Base + 5% (Serviço) - 5% (Resposta do P2)
+    p1_hold_edge = (setup.p1.hold_rate - base_hold) - (setup.p2.return_rate - base_return)
+    p2_hold_edge = (setup.p2.hold_rate - base_hold) - (setup.p1.return_rate - base_return)
+    
+    # 3. Aplicar ajustamentos do Elo (probabilidade do encontro) em espaço logit
+    z_base1 = _logit(base_hold + p1_hold_edge, cfg.hold_min, cfg.hold_max)
+    z_base2 = _logit(base_hold + p2_hold_edge, cfg.hold_min, cfg.hold_max)
     delta = (prob - 0.5) * MODEL.game_prob_scale * MODEL.hold_logit_scale
 
-    p1h = float(np.clip(_inv_logit(z_base + delta / 2, cfg.hold_min, cfg.hold_max),
-                         cfg.hold_min, cfg.hold_max))
-    p2h = float(np.clip(_inv_logit(z_base - delta / 2, cfg.hold_min, cfg.hold_max),
-                         cfg.hold_min, cfg.hold_max))
+    p1h = float(np.clip(_inv_logit(z_base1 + delta / 2, cfg.hold_min, cfg.hold_max), cfg.hold_min, cfg.hold_max))
+    p2h = float(np.clip(_inv_logit(z_base2 - delta / 2, cfg.hold_min, cfg.hold_max), cfg.hold_min, cfg.hold_max))
+    
     return p1h, p2h
 
 
@@ -619,7 +634,34 @@ def load_ml_model():
     except ImportError:
         pass
     return None
-
+@st.cache_data(ttl="12h", show_spinner=False)
+def sync_live_data(circuito: str, ano: int = datetime.now().year) -> pd.DataFrame:
+    """Vai buscar os resultados mais recentes diretamente à base de dados global (Sackmann)."""
+    prefix = "atp" if "ATP" in circuito else "wta"
+    url = f"https://raw.githubusercontent.com/JeffSackmann/tennis_{prefix}/master/{prefix}_matches_{ano}.csv"
+    
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        df_live = pd.read_csv(io.StringIO(response.text))
+        
+        # Limpeza e compatibilidade com o teu formato existente
+        df_live.columns = [str(c).lower().strip() for c in df_live.columns]
+        
+        # Normalizar nomes
+        for col, norm in [("winner_name", "_wn"), ("loser_name", "_on")]:
+            if col in df_live.columns:
+                df_live[norm] = df_live[col].astype(str).str.casefold().str.strip()
+        
+        # Calcular Hold Rates (se houver dados de serviço)
+        if "w_svgms" in df_live.columns:
+            df_live["w_hold_pct"] = (df_live["w_svgms"] - df_live.get("l_bpconverted", 0)) / df_live["w_svgms"]
+            df_live["l_hold_pct"] = (df_live["l_svgms"] - df_live.get("w_bpconverted", 0)) / df_live["l_svgms"]
+            
+        return df_live
+    except Exception as e:
+        st.warning(f"Não foi possível sincronizar os dados ao vivo: {e}. A usar cache local.")
+        return pd.DataFrame()
 
 @st.cache_data(ttl="1h", show_spinner=False)
 def load_match_data() -> pd.DataFrame:
@@ -1083,6 +1125,39 @@ def resolve_bet(bet_id: int, status: str, odd: float, stake_pct: float, closing_
     conn.close()
 
 init_db()
+def simulate_bankroll_ruin(win_rate: float, avg_odd: float, avg_stake: float, n_sims: int = 1000, n_bets: int = 500):
+    """Simula o futuro da tua banca para prever o risco de ruína (falência)."""
+    rng = np.random.default_rng()
+    bancas_finais = []
+    ruinas = 0
+    trajetorias = []
+    
+    for _ in range(n_sims):
+        banca = 100.0 # Começamos com 100 unidades (ou %)
+        caminho = [banca]
+        
+        # Simula uma série de apostas
+        vitorias = rng.random(n_bets) < win_rate
+        
+        for ganhou in vitorias:
+            stake = banca * avg_stake
+            if ganhou:
+                banca += stake * (avg_odd - 1.0)
+            else:
+                banca -= stake
+                
+            caminho.append(banca)
+            if banca <= 5.0: # Assumimos "ruína" se cair para 5% do inicial
+                break
+                
+        if banca <= 5.0:
+            ruinas += 1
+            
+        bancas_finais.append(banca)
+        if len(trajetorias) < 50: # Guardar algumas trajetórias para desenhar o gráfico
+            trajetorias.append(caminho)
+            
+    return ruinas / n_sims, np.median(bancas_finais), trajetorias
 # ============================================================================
 # SECÇÃO 6 — INTERFACE STREAMLIT
 # ============================================================================
@@ -1121,7 +1196,11 @@ if len(jogadores) < 2:
 st.sidebar.header("2. Filtros de Valor")
 limite_ev      = st.sidebar.slider("EV Mínimo (%)", 1.0, 15.0, 5.0, 0.5) / 100
 odd_minima_rec = st.sidebar.number_input("Odd Mínima Recomendada", value=1.50, step=0.05)
-
+st.sidebar.header("🔄 Pipeline de Dados")
+if st.sidebar.button("Sincronizar Dados da Época", type="primary"):
+    with st.spinner("A descarregar resultados mais recentes..."):
+        df_live = sync_live_data(circuito)
+        st.sidebar.success(f"✅ {len(df_live)} jogos atualizados com sucesso!")
 st.sidebar.header("⚙️ Condições de Jogo")
 vel_campo     = st.sidebar.selectbox("Velocidade do Campo", list(SURFACE_MOD.keys()))
 ajuste_forma  = st.sidebar.slider("Ajuste de Forma (P1 vs P2)", -5, 5, 0)
@@ -1534,3 +1613,31 @@ with tab_banca:
             use_container_width=True,
             hide_index=True
         )
+        st.markdown("---")
+        st.subheader("🔮 Teste de Stress ao Portfólio (Risco de Ruína)")
+        
+        if total_apostas >= 20: # Só corre se já tiveres alguma amostra real
+            win_rate_real = len(df_resolvidas[df_resolvidas['status'] == 'Ganha']) / total_apostas
+            odd_media = df_resolvidas['odd'].mean()
+            stake_media = df_resolvidas['stake_pct'].mean()
+            
+            with st.spinner("A correr 1000 simulações do teu futuro financeiro..."):
+                prob_ruina, mediana_final, trajetorias = simulate_bankroll_ruin(
+                    win_rate=win_rate_real, avg_odd=odd_media, avg_stake=stake_media
+                )
+            
+            cr1, cr2 = st.columns(2)
+            cr1.metric("Probabilidade de Ruína (Falir)", f"{prob_ruina:.1%}", delta_color="inverse" if prob_ruina > 0.05 else "normal")
+            cr2.metric("Banca Mediana após 500 Apostas", f"{mediana_final:.1f} U (Inicial: 100 U)")
+            
+            fig_ruin, ax_ruin = plt.subplots(figsize=(10, 4))
+            for traj in trajetorias:
+                ax_ruin.plot(traj, color='gray', alpha=0.1)
+            ax_ruin.plot(trajetorias[0], color='blue', alpha=0.5, label='Exemplo de Caminho')
+            ax_ruin.axhline(100, color='red', linestyle='--')
+            ax_ruin.set_title("50 Simulações de Bankroll (Próximas 500 Apostas)")
+            ax_ruin.set_ylabel("Unidades de Banca")
+            ax_ruin.set_xlabel("Número de Apostas")
+            st.pyplot(fig_ruin)
+        else:
+            st.info("⚠️ Regista pelo menos 20 apostas resolvidas para desbloquear a previsão de Risco de Ruína por Monte Carlo.")
