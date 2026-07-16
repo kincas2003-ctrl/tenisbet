@@ -1437,7 +1437,7 @@ with tab_calib:
                 if not tabela.empty:
                     chart_df = tabela.set_index("Bucket")[["Prob. Média Prevista", "Taxa Real de Vitórias"]]
                     st.line_chart(chart_df)
-                    with tab_banca:
+with tab_banca:
     st.header("💰 Gestão de Banca e Tracking Real")
     st.markdown("Monitoriza a performance real das tuas recomendações no mercado.")
     
