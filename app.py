@@ -780,6 +780,9 @@ def lookup_elo(nn: str, superficie: str, df_elos: pd.DataFrame, default: float) 
     return default
 
 
+_lookup_elo = lookup_elo
+
+
 
 def _calculate_time_weights(dates_series: pd.Series, decay_rate: float = MODEL.time_decay_rate) -> np.ndarray:
     """Calcula pesos exponenciais com base nos dias até à data atual."""
