@@ -73,7 +73,7 @@ class ModelConfig:
     kelly_fraction: float    = 0.10
     kelly_max: float         = 0.035
     kelly_min: float         = 0.005
-
+    time_decay_rate: float   = 0.005
     # ---- Parâmetros Avançados --------------------------------------------
     hold_shrink_k: float     = 20.0   
     form_elo_scale: float    = 400.0  
@@ -708,7 +708,21 @@ def _lookup_elo(nn: str, superficie: str, df_elos: pd.DataFrame, default: float)
     
     return default
 
+def _calculate_time_weights(dates_series: pd.Series, decay_rate: float = MODEL.time_decay_rate) -> np.ndarray:
+    """Calcula pesos exponenciais com base nos dias até à data atual."""
+    if dates_series.isna().all():
+        return np.ones(len(dates_series))
 
+    hoje = pd.Timestamp.now()
+    dates = pd.to_datetime(dates_series, errors='coerce')
+    
+    # Diferença em dias (fallback de 5 anos para jogos sem data)
+    dias_passados = (hoje - dates).dt.days.fillna(365 * 5)
+    dias_passados = np.clip(dias_passados, 0, None)
+
+    # Fórmula: W = e^(-lambda * dias)
+    weights = np.exp(-decay_rate * dias_passados)
+    return weights.to_numpy()
 def get_stats(nome: str, superficie: str, circuito: str, df: pd.DataFrame, df_elos: pd.DataFrame) -> PlayerStats:
     cfg = CIRCUIT[circuito]
     nn = str(nome).casefold().strip()
@@ -719,13 +733,27 @@ def get_stats(nome: str, superficie: str, circuito: str, df: pd.DataFrame, df_el
     if "_pn" in df.columns and "hold_percentage" in df.columns:
         m_all = df[df["_pn"] == nn]
         if not m_all.empty:
-            hold_global = float(m_all["hold_percentage"].mean())
+            # Novo: Cálculo de pesos se existir coluna de data (tourney_date ou date)
+            date_col = "tourney_date" if "tourney_date" in m_all.columns else ("date" if "date" in m_all.columns else None)
+            
+            if date_col:
+                pesos_all = _calculate_time_weights(m_all[date_col])
+                hold_global = float(np.average(m_all["hold_percentage"], weights=pesos_all))
+            else:
+                hold_global = float(m_all["hold_percentage"].mean())
+
             if "surface" in df.columns:
                 m_surf = m_all[m_all["surface"] == superficie]
             else:
                 m_surf = m_all.iloc[0:0]
+                
             if not m_surf.empty:
-                hold_surf = float(m_surf["hold_percentage"].mean())
+                if date_col:
+                    pesos_surf = _calculate_time_weights(m_surf[date_col])
+                    hold_surf = float(np.average(m_surf["hold_percentage"], weights=pesos_surf))
+                else:
+                    hold_surf = float(m_surf["hold_percentage"].mean())
+                    
                 n_surf = len(m_surf)
                 w = n_surf / (n_surf + MODEL.hold_shrink_k)
                 hold = w * hold_surf + (1 - w) * hold_global
@@ -770,13 +798,47 @@ def get_stats(nome: str, superficie: str, circuito: str, df: pd.DataFrame, df_el
             form = float(np.sum(weights_arr * wins_arr) / np.sum(weights_arr))
 # --- Modelação da Variância Individual (Hold STD) ---
     hold_std = MODEL.noise_std
-    if "_pn" in df.columns and "hold_percentage" in df.columns:
-        m_all = df[df["_pn"] == nn]
-        if len(m_all) >= 10:  # Precisamos de uma amostra mínima para ter variância real
-            std_real = float(m_all["hold_percentage"].std())
+    if "_pn" in df.columns and "hold_percentage" in df.columns and not m_all.empty:
+        if len(m_all) >= 10:  
+            if date_col:
+                # Variância ponderada
+                media_pond = np.average(m_all["hold_percentage"], weights=pesos_all)
+                variancia_pond = np.average((m_all["hold_percentage"] - media_pond)**2, weights=pesos_all)
+                std_real = float(np.sqrt(variancia_pond))
+            else:
+                std_real = float(m_all["hold_percentage"].std())
+                
             if pd.notna(std_real):
-                # Limita entre 1% (incrivelmente sólido) e 4% (extremamente errático)
                 hold_std = float(np.clip(std_real, 0.01, 0.04))
+
+    # --- Forma recente ponderada pelo Elo do adversário E pelo tempo ---
+    form = 0.5
+    if "_pn" in df.columns and "_wn" in df.columns and "_on" in df.columns:
+        m_form = df[df["_pn"] == nn].tail(15) # Aumentamos para 15 jogos porque o tempo agora filtra o ruído
+        if not m_form.empty:
+            weights, wins = [], []
+            
+            # Gerar pesos de tempo se aplicável
+            pesos_tempo = _calculate_time_weights(m_form[date_col]) if date_col else np.ones(len(m_form))
+            
+            for i, (_, row) in enumerate(m_form.iterrows()):
+                opp_nn = row["_on"]
+                opp_elo = _lookup_elo(opp_nn, superficie, df_elos, cfg.default_elo)
+                
+                # Peso Elo adversário
+                w_elo = float(np.clip(
+                    2.0 ** ((opp_elo - cfg.default_elo) / MODEL.form_elo_scale),
+                    MODEL.form_weight_min, MODEL.form_weight_max,
+                ))
+                
+                # Peso final = Peso do Tempo * Peso do Elo do Adversário
+                weights.append(w_elo * pesos_tempo[i])
+                wins.append(1.0 if row["_wn"] == nn else 0.0)
+                
+            weights_arr = np.array(weights)
+            wins_arr = np.array(wins)
+            if np.sum(weights_arr) > 0:
+                form = float(np.sum(weights_arr * wins_arr) / np.sum(weights_arr))
 
     return PlayerStats(
         elo=elo, 
@@ -784,7 +846,7 @@ def get_stats(nome: str, superficie: str, circuito: str, df: pd.DataFrame, df_el
         fatigue=fatigue, 
         recent_form=form, 
         ace_rate_100=ace_rate_100, 
-        hold_std=hold_std # Variável adicionada aqui
+        hold_std=hold_std
     )
 
 def get_h2h(p1: str, p2: str, df: pd.DataFrame) -> Tuple[int, int]:
