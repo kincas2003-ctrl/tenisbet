@@ -712,7 +712,7 @@ def load_agenda() -> pd.DataFrame:
     # Fallback apenas se o ficheiro não existir
     hoje = datetime.today().date()
     amanha = hoje + timedelta(days=1)
-    return pd.DataFrame({
+    return pd.DataFrame()
         "Torneio": ["ATP Challenger Amersfoort", "ATP Challenger Amersfoort", "WTA Palermo", "WTA Palermo"],
         "Data": [hoje, hoje, hoje, amanha],
         "Hora": ["14:00", "15:30", "16:00", "10:00"],
